@@ -50,9 +50,22 @@ into **Secret**, then click **Add secret**. Repeat for these four secrets:
 | Secret | Value |
 | --- | --- |
 | `SMTP_FROM` | `dlg-electrical-solutions@outlook.com` |
-| `QUOTE_EMAIL_TO` | Your receiving email address; use the same Outlook address for a self-test if desired |
+| `QUOTE_EMAIL_TO` | One or more receiving email addresses, separated by commas |
 | `MICROSOFT_CLIENT_ID` | Application (client) ID from the app registration below |
 | `MICROSOFT_REFRESH_TOKEN` | Token created by the one-time local sign-in below |
+
+To send to multiple recipients, edit the existing `QUOTE_EMAIL_TO` secret:
+
+```text
+owner@example.com, accounts@example.org, manager@example.net
+```
+
+Use plain addresses separated by commas; spaces around each address are allowed.
+One address still works. Invalid addresses and empty entries fail before sending.
+All recipients are in the **To** field and can see each other's addresses. This
+works with both Outlook Graph and other SMTP senders. If an SMTP server accepts
+some recipients and rejects others, the job fails after partial delivery; check
+which recipients received the message before retrying to avoid duplicates.
 
 `SMTP_FROM` keeps its existing name and supplies the sender header for either
 mail service. Outlook does not use `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME` or

@@ -132,6 +132,48 @@ class QuotationTests(unittest.TestCase):
                 with self.assertRaises(smtplib.SMTPException):
                     send_email(path, "POC-001")
 
+    def test_multiple_recipients_in_graph_and_smtp(self):
+        settings = {"SMTP_FROM": "sender@example.invalid", "QUOTE_EMAIL_TO": " owner@another.invalid, accounts@example.invalid ",
+                    "SMTP_HOST": "smtp.example.invalid", "SMTP_USERNAME": "smtp-user", "SMTP_PASSWORD": "mock-password"}
+        expected = ["owner@another.invalid", "accounts@example.invalid"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quote.pdf"
+            path.write_bytes(b"%PDF-mock")
+            with patch.dict(os.environ, settings, clear=True), patch("quotation.smtplib.SMTP") as client:
+                smtp = client.return_value.__enter__.return_value
+                smtp.send_message.return_value = {}
+                send_email(path, "POC-001")
+                message = smtp.send_message.call_args.args[0]
+                self.assertEqual([address.addr_spec for address in message["To"].addresses], expected)
+                smtp.send_message.return_value = {expected[1]: (550, b"Rejected")}
+                with self.assertRaises(smtplib.SMTPException):
+                    send_email(path, "POC-001")
+            oauth_settings = {**settings, "MICROSOFT_CLIENT_ID": "mock-client", "MICROSOFT_REFRESH_TOKEN": "mock-refresh"}
+            with patch.dict(os.environ, oauth_settings, clear=True), patch("quotation.urlopen") as open_url, \
+                    patch("quotation.refresh_access_token", return_value="mock-access"):
+                open_url.return_value.__enter__.return_value.status = 202
+                send_email(path, "POC-001")
+                message = message_from_bytes(base64.b64decode(open_url.call_args.args[0].data), policy=default)
+                self.assertEqual([address.addr_spec for address in message["To"].addresses], expected)
+                self.assertEqual(next(message.iter_attachments()).get_payload(decode=True), b"%PDF-mock")
+
+    def test_invalid_recipient_lists_fail_before_authentication_or_sending(self):
+        settings = {"SMTP_FROM": "sender@example.invalid", "MICROSOFT_CLIENT_ID": "mock-client",
+                    "MICROSOFT_REFRESH_TOKEN": "mock-refresh"}
+        invalid = [" ", "not-an-email", "owner@", "@example.invalid", "a@example.invalid,",
+                   "a@example.invalid,,b@example.invalid", "a@example.invalid;b@example.invalid",
+                   "a@example.invalid, private-invalid-entry", "a@example.invalid\r\nBcc: b@example.invalid"]
+        for recipients in invalid:
+            with self.subTest(recipients=recipients), patch.dict(os.environ, {**settings, "QUOTE_EMAIL_TO": recipients}, clear=True), \
+                    patch("quotation.refresh_access_token") as refresh, patch("quotation.urlopen") as open_url, \
+                    patch("quotation.smtplib.SMTP") as smtp:
+                with self.assertRaisesRegex(ValueError, "valid email addresses separated by commas") as error:
+                    send_email(Path("unused.pdf"), "POC-001")
+                self.assertNotIn("private-invalid-entry", str(error.exception))
+                refresh.assert_not_called()
+                open_url.assert_not_called()
+                smtp.assert_not_called()
+
     def test_outlook_uses_graph_and_attaches_pdf_without_smtp(self):
         settings = {"SMTP_PORT": "unused-invalid-port", "SMTP_FROM": " sender@outlook.com\n",
                     "QUOTE_EMAIL_TO": " owner@another.invalid\n",

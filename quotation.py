@@ -9,6 +9,7 @@ import smtplib
 import ssl
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from email.errors import HeaderParseError
 from email.headerregistry import Address
 from email.message import EmailMessage
 from email.policy import SMTP as SMTP_POLICY
@@ -193,11 +194,16 @@ def send_email(path, quote_id):
     if missing:
         raise ValueError("Missing email settings: " + ", ".join(missing))
     sender = str(Address(addr_spec=text(os.environ["SMTP_FROM"], "SMTP_FROM")))
-    recipient = str(Address(addr_spec=text(os.environ["QUOTE_EMAIL_TO"], "QUOTE_EMAIL_TO")))
+    try:
+        recipients = [Address(addr_spec=value.strip()) for value in os.environ["QUOTE_EMAIL_TO"].split(",")]
+        if any(not address.username or not address.domain for address in recipients):
+            raise ValueError
+    except (ValueError, HeaderParseError):
+        raise ValueError("QUOTE_EMAIL_TO must contain valid email addresses separated by commas, with no empty entries.") from None
     message = EmailMessage()
     message["Subject"] = f"Mock electrical quotation {quote_id}"
     message["From"] = sender
-    message["To"] = recipient
+    message["To"] = recipients
     message.set_content("Attached is your mock electrical quotation. All prices and tax settings are illustrative.\n")
     message.add_attachment(path.read_bytes(), maintype="application", subtype="pdf", filename=path.name)
     if oauth:

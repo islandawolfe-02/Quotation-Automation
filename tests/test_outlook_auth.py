@@ -17,6 +17,9 @@ DEVICE = {"device_code": "private-device-code", "user_code": "DEMO-CODE",
 
 
 class OutlookAuthTests(unittest.TestCase):
+    def test_scope_requests_graph_mail_send_and_offline_access(self):
+        self.assertEqual(set(SCOPE.split()), {"https://graph.microsoft.com/Mail.Send", "offline_access"})
+
     def test_form_request_and_http_error_response(self):
         with patch("outlook_auth.urlopen") as open_url:
             open_url.return_value.__enter__.return_value = io.StringIO('{"access_token":"mock-access"}')

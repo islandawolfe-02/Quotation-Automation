@@ -1,6 +1,7 @@
 """Generate a mock electrical quotation and optionally email its PDF."""
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -10,7 +11,10 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.headerregistry import Address
 from email.message import EmailMessage
+from email.policy import SMTP as SMTP_POLICY
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
@@ -183,36 +187,53 @@ def render_pdf(path, request, result, template):
 
 def send_email(path, quote_id):
     oauth = bool(os.environ.get("MICROSOFT_CLIENT_ID") or os.environ.get("MICROSOFT_REFRESH_TOKEN"))
-    credentials = ("MICROSOFT_CLIENT_ID", "MICROSOFT_REFRESH_TOKEN") if oauth else ("SMTP_PASSWORD",)
-    names = ("SMTP_HOST", "SMTP_USERNAME", "SMTP_FROM", "QUOTE_EMAIL_TO") + credentials
+    credentials = ("MICROSOFT_CLIENT_ID", "MICROSOFT_REFRESH_TOKEN") if oauth else ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD")
+    names = ("SMTP_FROM", "QUOTE_EMAIL_TO") + credentials
     missing = [name for name in names if not os.environ.get(name)]
     if missing:
         raise ValueError("Missing email settings: " + ", ".join(missing))
-    username = text(os.environ["SMTP_USERNAME"], "SMTP_USERNAME")
     sender = str(Address(addr_spec=text(os.environ["SMTP_FROM"], "SMTP_FROM")))
     recipient = str(Address(addr_spec=text(os.environ["QUOTE_EMAIL_TO"], "QUOTE_EMAIL_TO")))
-    port = int(os.environ.get("SMTP_PORT", "587"))
-    if not 1 <= port <= 65535:
-        raise ValueError("SMTP_PORT must be between 1 and 65535")
     message = EmailMessage()
     message["Subject"] = f"Mock electrical quotation {quote_id}"
     message["From"] = sender
     message["To"] = recipient
     message.set_content("Attached is your mock electrical quotation. All prices and tax settings are illustrative.\n")
     message.add_attachment(path.read_bytes(), maintype="application", subtype="pdf", filename=path.name)
+    if oauth:
+        token = refresh_access_token(text(os.environ["MICROSOFT_CLIENT_ID"], "MICROSOFT_CLIENT_ID"),
+                                     text(os.environ["MICROSOFT_REFRESH_TOKEN"], "MICROSOFT_REFRESH_TOKEN"))
+        request = Request("https://graph.microsoft.com/v1.0/me/sendMail",
+                          data=base64.b64encode(message.as_bytes(policy=SMTP_POLICY)),
+                          headers={"Authorization": f"Bearer {token}", "Content-Type": "text/plain"})
+        try:
+            with urlopen(request, timeout=30) as response:
+                if response.status != 202:
+                    raise ValueError("Microsoft Graph did not confirm email submission; check the mailbox before retrying.")
+        except HTTPError as exc:
+            # Provider bodies may contain addresses or tokens; report only fixed guidance and status.
+            with exc:
+                status = exc.code
+            if status in (401, 403):
+                reason = "Run outlook_auth.py again, approve Mail.Send and update MICROSOFT_REFRESH_TOKEN. SMTP_FROM must be the authorised Outlook address."
+            elif status == 429:
+                reason = "Microsoft rate-limited the request. Wait before starting a new run."
+            else:
+                reason = "Microsoft did not confirm email submission. Check the mailbox before retrying."
+            raise ValueError(f"Microsoft Graph rejected email (HTTP {status}). {reason}") from None
+        return
+
+    username = text(os.environ["SMTP_USERNAME"], "SMTP_USERNAME")
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    if not 1 <= port <= 65535:
+        raise ValueError("SMTP_PORT must be between 1 and 65535")
     context = ssl.create_default_context()
-    token = refresh_access_token(os.environ["MICROSOFT_CLIENT_ID"], os.environ["MICROSOFT_REFRESH_TOKEN"]) if oauth else None
     client = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
     options = {"context": context} if port == 465 else {}
     with client(os.environ["SMTP_HOST"], port, timeout=30, **options) as smtp:
         if port != 465:
             smtp.starttls(context=context)
-        if oauth:
-            smtp.ehlo()
-            auth = f'user={username}\x01auth=Bearer {token}\x01\x01'
-            smtp.auth("XOAUTH2", lambda challenge=None: auth if challenge is None else "")
-        else:
-            smtp.login(username, os.environ["SMTP_PASSWORD"])
+        smtp.login(username, os.environ["SMTP_PASSWORD"])
         refused = smtp.send_message(message)
         if refused:
             raise smtplib.SMTPException("Recipient rejected")
@@ -249,7 +270,7 @@ def main():
     except (ValueError, KeyError, TypeError, OSError, smtplib.SMTPException) as exc:
         # SMTP responses can contain private addresses; keep provider responses out of CI logs.
         if isinstance(exc, (smtplib.SMTPException, OSError)):
-            parser.exit(1, f"Quotation failed ({type(exc).__name__}). Check files, connectivity and SMTP settings.\n")
+            parser.exit(1, f"Quotation failed ({type(exc).__name__}). Check files, connectivity and email settings.\n")
         parser.exit(1, f"Quotation failed: {exc}\n")
 
 

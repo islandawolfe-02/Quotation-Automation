@@ -2,7 +2,8 @@
 
 Enter materials and quantities, generate a mock quotation PDF, and email it to
 your configured address through GitHub Actions. The recipient can use any email
-provider. The sender uses SMTP with TLS, including Outlook.com OAuth sign-in.
+provider. Outlook.com sends through Microsoft Graph with OAuth; other senders
+can use authenticated SMTP with TLS.
 
 The sample follows the supplied Tripura Bhavan quotation's section structure:
 light fixtures, wires and consumables, labour, summary and terms. Other charges
@@ -33,36 +34,47 @@ duplicate catalogue codes and invalid tax percentages fail the run.
 ## Set up email once
 
 For the selected sender, **dlg-electrical-solutions@outlook.com**, follow the
-Outlook.com instructions below. Outlook.com requires OAuth, so a mailbox
-password or app password is not the authentication method used here.
-[Microsoft's Outlook.com settings](https://support.microsoft.com/en-us/outlook/pop-imap-and-smtp-settings-for-outlook-com).
+Outlook.com instructions below. Outlook sends through the Microsoft Graph mail
+API with delegated `Mail.Send` permission. This supports personal Outlook
+accounts and does not require SMTP authentication to be enabled on the mailbox.
+[Microsoft Graph sendMail documentation](https://learn.microsoft.com/en-us/graph/api/user-sendmail?view=graph-rest-1.0).
 
 ### Outlook.com sender
 
 Open this private repository on GitHub, then **Settings → Secrets and variables
-→ Actions**. There are separate **Variables** and **Secrets** tabs.
-Under **Variables → New repository variable**, add each name/value separately:
-
-| Variable | Value |
-| --- | --- |
-| `SMTP_HOST` | `smtp-mail.outlook.com` |
-| `SMTP_PORT` | `587` |
+→ Actions → Secrets**. No repository variables are required for Outlook.
 
 Under **Secrets → New repository secret**, enter the **Name**, paste its value
-into **Secret**, then click **Add secret**. Repeat for these five secrets:
+into **Secret**, then click **Add secret**. Repeat for these four secrets:
 
 | Secret | Value |
 | --- | --- |
-| `SMTP_USERNAME` | `dlg-electrical-solutions@outlook.com` |
 | `SMTP_FROM` | `dlg-electrical-solutions@outlook.com` |
 | `QUOTE_EMAIL_TO` | Your receiving email address; use the same Outlook address for a self-test if desired |
 | `MICROSOFT_CLIENT_ID` | Application (client) ID from the app registration below |
 | `MICROSOFT_REFRESH_TOKEN` | Token created by the one-time local sign-in below |
 
-`SMTP_PASSWORD` is not needed for Outlook. If both
-Microsoft OAuth secrets are absent, the script retains password-based SMTP
-support for other sending services. If either OAuth secret is present, both
-are required; authentication failure does not fall back to a password.
+`SMTP_FROM` keeps its existing name and supplies the sender header for either
+mail service. Outlook does not use `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME` or
+`SMTP_PASSWORD`; existing values can remain configured. If either Microsoft
+OAuth secret is present, both are required and Graph is used. Failures do not
+fall back to SMTP or retry the mail submission automatically.
+
+**Already set up the earlier SMTP version?** Keep your existing app registration
+and `MICROSOFT_CLIENT_ID`. Use the updated helper to approve `Mail.Send` and
+replace the `MICROSOFT_REFRESH_TOKEN` secret:
+
+```sh
+rm -f .outlook-refresh-token
+python3 outlook_auth.py --client-id YOUR_APPLICATION_CLIENT_ID
+pbcopy < .outlook-refresh-token
+```
+
+Complete the Microsoft sign-in before the copy command. On GitHub, edit the
+existing `MICROSOFT_REFRESH_TOKEN` secret and paste the replacement token. Delete
+the local token file after saving it in GitHub. Push the updated code and start
+a new manual run on `main`. The old `SMTP.Send` consent does not grant the new
+`Mail.Send` permission. No new application registration is necessary.
 
 Register and authorise the application once:
 
@@ -76,7 +88,7 @@ Register and authorise the application once:
    and copy **Application (client) ID** into `MICROSOFT_CLIENT_ID` above.
 3. In the app's **Authentication** settings, set **Allow public client flows**
    to **Yes** and save. No client secret or redirect URI is needed for this
-   device-code flow. The helper requests delegated `SMTP.Send` and
+   device-code flow. The helper requests delegated `Mail.Send` and
    `offline_access` permissions when you sign in; do not choose application
    permissions or the client-credentials flow.
 4. From this repository on your own computer, run:
@@ -102,7 +114,7 @@ or is revoked; remove any existing local token file first. Refresh tokens
 generally last 90 days for this flow but can be revoked earlier.
 [Microsoft token lifetime guidance](https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens).
 
-[Microsoft SMTP OAuth protocol](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth),
+[Microsoft Graph sendMail](https://learn.microsoft.com/en-us/graph/api/user-sendmail?view=graph-rest-1.0),
 [device-code sign-in](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code).
 
 ### Other SMTP senders
@@ -135,27 +147,28 @@ not necessarily enable SMTP. Get SMTP settings from your provider.
    to `QUOTE_EMAIL_TO`. No PDF download is required.
 
 The recipient is deliberately configured in a secret, so customer input cannot
-redirect the email. A failed email submission fails the job. Successful SMTP
-submission means the sending server accepted it, not that inbox delivery is
-guaranteed; check spam folders too. There are no automatic send retries.
+redirect the email. A failed email submission fails the job. Successful Graph
+submission (`202 Accepted`) or SMTP submission means the service accepted the
+request; check the inbox and spam folder to confirm delivery. Graph also saves
+a copy in the sending account's Sent Items. There are no automatic send retries.
 Rerunning a manual job can send another copy with the same quotation ID.
 
 ### If Outlook authentication fails
 
-`SMTP_PASSWORD` is intentionally empty for Outlook OAuth. If token renewal fails,
-the script asks you to authorise again. If renewal succeeds but Outlook rejects
-SMTP sign-in, the log reports only the SMTP response number, enhanced status
-code (when supplied), and a fixed explanation; private provider text is omitted.
+If you still see **SMTP 535 / 5.7.139**, that run is using the earlier SMTP code,
+or both Microsoft OAuth secrets are absent. The updated Outlook path makes no
+SMTP connection. Check that the updated code is pushed and both secrets exist.
 
-- A message saying **SMTP authentication is disabled** identifies a mailbox or
-  tenant restriction. For a personal Outlook.com mailbox, contact Microsoft
-  support about that SMTP restriction.
-- A message saying **Password-based SMTP is disabled** means the Microsoft OAuth
-  secrets need configuring.
-- A generic **Authentication was rejected** message requires checking that
-  `SMTP_USERNAME` is exactly the Outlook account used in the sign-in helper,
-  and that `SMTP_FROM` uses that address. Use the plain address without a display
-  name or surrounding quotes. Email-address settings are trimmed automatically.
+- **Microsoft authorisation failed**: run the updated helper, approve `Mail.Send`,
+  and replace `MICROSOFT_REFRESH_TOKEN`.
+- **Microsoft Graph rejected email (HTTP 401 or 403)**: reauthorise for
+  `Mail.Send` and check that `SMTP_FROM` is the Outlook address you signed in as.
+- **HTTP 429**: wait before starting a new run; Microsoft rate-limited the request.
+- Other failed or unconfirmed submissions: check the recipient inbox and the
+  sender's Sent Items before retrying, to avoid duplicate messages.
+
+The script reports HTTP status and fixed guidance without logging the Graph
+response body, email addresses, or tokens.
 
 Share the safe error code and fixed explanation when asking for help, not tokens
 or passwords. After pushing a code fix, start a **new Run workflow** on `main`;

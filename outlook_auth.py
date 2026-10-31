@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 from uuid import UUID
 
 AUTHORITY = "https://login.microsoftonline.com/consumers/oauth2/v2.0"
-SCOPE = "https://outlook.office.com/SMTP.Send offline_access"
+SCOPE = "https://graph.microsoft.com/Mail.Send offline_access"
 TOKEN_FILE = Path(__file__).resolve().parent / ".outlook-refresh-token"
 
 

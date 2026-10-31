@@ -1,3 +1,4 @@
+import base64
 import copy
 import io
 import json
@@ -6,8 +7,11 @@ import smtplib
 import tempfile
 import unittest
 from decimal import Decimal
+from email import message_from_bytes
+from email.policy import default
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from quotation import ROOT, calculate, load_json, main, render_pdf, send_email
 
@@ -128,29 +132,71 @@ class QuotationTests(unittest.TestCase):
                 with self.assertRaises(smtplib.SMTPException):
                     send_email(path, "POC-001")
 
-    def test_outlook_uses_oauth_without_a_password(self):
-        settings = {"SMTP_HOST": "smtp-mail.outlook.com", "SMTP_USERNAME": " sender@outlook.com\n",
-                    "SMTP_FROM": " sender@outlook.com\n", "QUOTE_EMAIL_TO": " owner@another.invalid\n",
+    def test_outlook_uses_graph_and_attaches_pdf_without_smtp(self):
+        settings = {"SMTP_PORT": "unused-invalid-port", "SMTP_FROM": " sender@outlook.com\n",
+                    "QUOTE_EMAIL_TO": " owner@another.invalid\n",
                     "MICROSOFT_CLIENT_ID": "mock-client", "MICROSOFT_REFRESH_TOKEN": "mock-refresh"}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quote.pdf"
             path.write_bytes(b"%PDF-mock")
             with patch.dict(os.environ, settings, clear=True), patch("quotation.smtplib.SMTP") as client, \
+                    patch("quotation.smtplib.SMTP_SSL") as secure, patch("quotation.urlopen") as open_url, \
                     patch("quotation.refresh_access_token", return_value="mock-access") as refresh:
-                smtp = client.return_value.__enter__.return_value
-                smtp.send_message.return_value = {}
+                open_url.return_value.__enter__.return_value.status = 202
                 send_email(path, "POC-001")
                 refresh.assert_called_once_with("mock-client", "mock-refresh")
-                smtp.login.assert_not_called()
-                smtp.auth.assert_called_once()
-                mechanism, callback = smtp.auth.call_args.args
-                self.assertEqual(mechanism, "XOAUTH2")
-                self.assertEqual(callback(), "user=sender@outlook.com\x01auth=Bearer mock-access\x01\x01")
-                self.assertEqual(callback(b"error challenge"), "")
-                self.assertEqual([call[0] for call in smtp.mock_calls], ["starttls", "ehlo", "auth", "send_message"])
-                message = smtp.send_message.call_args.args[0]
+                client.assert_not_called()
+                secure.assert_not_called()
+                open_url.assert_called_once()
+                request = open_url.call_args.args[0]
+                self.assertEqual(request.full_url, "https://graph.microsoft.com/v1.0/me/sendMail")
+                self.assertEqual(request.get_method(), "POST")
+                self.assertEqual(request.get_header("Authorization"), "Bearer mock-access")
+                self.assertEqual(request.get_header("Content-type"), "text/plain")
+                message = message_from_bytes(base64.b64decode(request.data, validate=True), policy=default)
+                self.assertEqual(message["Subject"], "Mock electrical quotation POC-001")
                 self.assertEqual(message["From"], "sender@outlook.com")
                 self.assertEqual(message["To"], "owner@another.invalid")
+                attachment = next(message.iter_attachments())
+                self.assertEqual(attachment.get_filename(), "quote.pdf")
+                self.assertEqual(attachment.get_content_type(), "application/pdf")
+                self.assertEqual(attachment.get_payload(decode=True), b"%PDF-mock")
+
+    def test_graph_failures_are_private_and_do_not_retry_or_fall_back(self):
+        settings = {"SMTP_FROM": "sender@outlook.com", "QUOTE_EMAIL_TO": "owner@another.invalid",
+                    "MICROSOFT_CLIENT_ID": "mock-client", "MICROSOFT_REFRESH_TOKEN": "mock-refresh"}
+        for status in (401, 403, 429, 500):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "quote.pdf"
+                path.write_bytes(b"%PDF-mock")
+                error = HTTPError("https://graph.microsoft.com/v1.0/me/sendMail", status,
+                                  "PRIVATE_PROVIDER_DETAILS", {}, io.BytesIO(b"private@example.invalid PRIVATE_ACCESS_TOKEN"))
+                with patch.dict(os.environ, settings, clear=True), patch("quotation.urlopen", side_effect=error) as open_url, \
+                        patch("quotation.refresh_access_token", return_value="mock-access"), \
+                        patch("quotation.smtplib.SMTP") as client:
+                    with self.assertRaisesRegex(ValueError, f"HTTP {status}") as raised:
+                        send_email(path, "POC-001")
+                    open_url.assert_called_once()
+                    client.assert_not_called()
+                    self.assertNotIn("PRIVATE", str(raised.exception))
+                    self.assertNotIn("private@example.invalid", str(raised.exception))
+
+    def test_graph_requires_confirmed_submission_and_a_valid_token(self):
+        settings = {"SMTP_FROM": "sender@outlook.com", "QUOTE_EMAIL_TO": "owner@another.invalid",
+                    "MICROSOFT_CLIENT_ID": "mock-client", "MICROSOFT_REFRESH_TOKEN": "mock-refresh"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quote.pdf"
+            path.write_bytes(b"%PDF-mock")
+            with patch.dict(os.environ, settings, clear=True), patch("quotation.urlopen") as open_url, \
+                    patch("quotation.refresh_access_token", return_value="mock-access") as refresh:
+                open_url.return_value.__enter__.return_value.status = 200
+                with self.assertRaisesRegex(ValueError, "did not confirm email submission"):
+                    send_email(path, "POC-001")
+                open_url.reset_mock()
+                refresh.side_effect = ValueError("Microsoft authorisation failed")
+                with self.assertRaisesRegex(ValueError, "authorisation failed"):
+                    send_email(path, "POC-001")
+                open_url.assert_not_called()
 
     def test_authentication_failure_reports_only_safe_codes_and_guidance(self):
         cases = [

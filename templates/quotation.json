@@ -1,0 +1,16 @@
+{
+  "business": {
+    "name": "Example Electrical Works",
+    "address": "Demo Business Address, Shillong, Meghalaya",
+    "phone": "+91 00000 00000",
+    "email": "office@example.invalid",
+    "registration": "Mock business - no tax registration supplied"
+  },
+  "terms": [
+    "This is a proof of concept. All prices and tax settings are illustrative and must be reviewed before commercial use.",
+    "Quotation validity is stated above. Procurement and mobilisation dates require written confirmation.",
+    "Mock payment terms: 50% advance and balance after completion and inspection.",
+    "The client provides safe storage and access to the work areas.",
+    "Changes to quantities or scope require a revised quotation. Manufacturer warranty terms apply to supplied materials."
+  ]
+}

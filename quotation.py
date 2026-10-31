@@ -188,8 +188,9 @@ def send_email(path, quote_id):
     missing = [name for name in names if not os.environ.get(name)]
     if missing:
         raise ValueError("Missing email settings: " + ", ".join(missing))
-    sender = str(Address(addr_spec=os.environ["SMTP_FROM"]))
-    recipient = str(Address(addr_spec=os.environ["QUOTE_EMAIL_TO"]))
+    username = text(os.environ["SMTP_USERNAME"], "SMTP_USERNAME")
+    sender = str(Address(addr_spec=text(os.environ["SMTP_FROM"], "SMTP_FROM")))
+    recipient = str(Address(addr_spec=text(os.environ["QUOTE_EMAIL_TO"], "QUOTE_EMAIL_TO")))
     port = int(os.environ.get("SMTP_PORT", "587"))
     if not 1 <= port <= 65535:
         raise ValueError("SMTP_PORT must be between 1 and 65535")
@@ -208,10 +209,10 @@ def send_email(path, quote_id):
             smtp.starttls(context=context)
         if oauth:
             smtp.ehlo()
-            auth = f'user={os.environ["SMTP_USERNAME"]}\x01auth=Bearer {token}\x01\x01'
+            auth = f'user={username}\x01auth=Bearer {token}\x01\x01'
             smtp.auth("XOAUTH2", lambda challenge=None: auth if challenge is None else "")
         else:
-            smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+            smtp.login(username, os.environ["SMTP_PASSWORD"])
         refused = smtp.send_message(message)
         if refused:
             raise smtplib.SMTPException("Recipient rejected")
@@ -228,10 +229,23 @@ def main():
         result = calculate(request, load_json(ROOT / "data/catalogue.json"), load_json(ROOT / "data/charges.json"))
         output = ROOT / "output/pdf" / f'{request["quotation_id"]}.pdf'
         render_pdf(output, request, result, load_json(ROOT / "templates/quotation.json"))
-        print("Mock quotation PDF generated successfully.")
+        print("Mock quotation PDF generated successfully.", flush=True)
         if args.send_email:
             send_email(output, request["quotation_id"])
             print("Email accepted by the sending server. Check the recipient inbox and spam folder.")
+    except smtplib.SMTPAuthenticationError as exc:
+        detail = exc.smtp_error.decode(errors="replace") if isinstance(exc.smtp_error, bytes) else str(exc.smtp_error)
+        status = re.search(r"\b[245]\.\d{1,3}\.\d{1,3}\b", detail)
+        code = f"SMTP {exc.smtp_code}" + (f" / {status.group()}" if status else "")
+        if "smtpclientauthentication is disabled" in detail.lower():
+            reason = "SMTP authentication is disabled for the mailbox or tenant. The mail provider must resolve this restriction."
+        elif "basic authentication is disabled" in detail.lower():
+            reason = "Password-based SMTP is disabled. Configure both Microsoft OAuth secrets for Outlook."
+        elif "locked" in detail.lower() or "blocked" in detail.lower():
+            reason = "The provider reports an account or sign-in restriction. Check the account's security alerts."
+        else:
+            reason = "Authentication was rejected. Verify SMTP_USERNAME matches the Outlook account used during authorisation and SMTP_FROM."
+        parser.exit(1, f"Quotation failed ({code}). {reason} Provider response text was omitted to protect private data.\n")
     except (ValueError, KeyError, TypeError, OSError, smtplib.SMTPException) as exc:
         # SMTP responses can contain private addresses; keep provider responses out of CI logs.
         if isinstance(exc, (smtplib.SMTPException, OSError)):

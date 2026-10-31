@@ -140,6 +140,27 @@ submission means the sending server accepted it, not that inbox delivery is
 guaranteed; check spam folders too. There are no automatic send retries.
 Rerunning a manual job can send another copy with the same quotation ID.
 
+### If Outlook authentication fails
+
+`SMTP_PASSWORD` is intentionally empty for Outlook OAuth. If token renewal fails,
+the script asks you to authorise again. If renewal succeeds but Outlook rejects
+SMTP sign-in, the log reports only the SMTP response number, enhanced status
+code (when supplied), and a fixed explanation; private provider text is omitted.
+
+- A message saying **SMTP authentication is disabled** identifies a mailbox or
+  tenant restriction. For a personal Outlook.com mailbox, contact Microsoft
+  support about that SMTP restriction.
+- A message saying **Password-based SMTP is disabled** means the Microsoft OAuth
+  secrets need configuring.
+- A generic **Authentication was rejected** message requires checking that
+  `SMTP_USERNAME` is exactly the Outlook account used in the sign-in helper,
+  and that `SMTP_FROM` uses that address. Use the plain address without a display
+  name or surrounding quotes. Email-address settings are trimmed automatically.
+
+Share the safe error code and fixed explanation when asking for help, not tokens
+or passwords. After pushing a code fix, start a **new Run workflow** on `main`;
+re-running an older failed run uses the code from that older run.
+
 No PDF artifacts or quotation history are uploaded, and generated PDFs are
 removed at the end of the job. The emailed copy is your record. GitHub still
 retains workflow logs/metadata, and JSON entered as a workflow input is not a

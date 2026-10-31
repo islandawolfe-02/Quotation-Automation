@@ -1,4 +1,5 @@
 import copy
+import io
 import json
 import os
 import smtplib
@@ -128,8 +129,8 @@ class QuotationTests(unittest.TestCase):
                     send_email(path, "POC-001")
 
     def test_outlook_uses_oauth_without_a_password(self):
-        settings = {"SMTP_HOST": "smtp-mail.outlook.com", "SMTP_USERNAME": "sender@outlook.com",
-                    "SMTP_FROM": "sender@outlook.com", "QUOTE_EMAIL_TO": "owner@another.invalid",
+        settings = {"SMTP_HOST": "smtp-mail.outlook.com", "SMTP_USERNAME": " sender@outlook.com\n",
+                    "SMTP_FROM": " sender@outlook.com\n", "QUOTE_EMAIL_TO": " owner@another.invalid\n",
                     "MICROSOFT_CLIENT_ID": "mock-client", "MICROSOFT_REFRESH_TOKEN": "mock-refresh"}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quote.pdf"
@@ -147,6 +148,35 @@ class QuotationTests(unittest.TestCase):
                 self.assertEqual(callback(), "user=sender@outlook.com\x01auth=Bearer mock-access\x01\x01")
                 self.assertEqual(callback(b"error challenge"), "")
                 self.assertEqual([call[0] for call in smtp.mock_calls], ["starttls", "ehlo", "auth", "send_message"])
+                message = smtp.send_message.call_args.args[0]
+                self.assertEqual(message["From"], "sender@outlook.com")
+                self.assertEqual(message["To"], "owner@another.invalid")
+
+    def test_authentication_failure_reports_only_safe_codes_and_guidance(self):
+        cases = [
+            (b"5.7.139 Authentication unsuccessful, SmtpClientAuthentication is disabled for the Mailbox", "disabled for the mailbox or tenant", "5.7.139"),
+            (b"5.7.139 Authentication unsuccessful, basic authentication is disabled", "Password-based SMTP is disabled", "5.7.139"),
+            (b"5.7.139 user is locked by security policy", "account or sign-in restriction", "5.7.139"),
+            (b"5.7.3 Authentication unsuccessful", "SMTP_USERNAME matches the Outlook account", "5.7.3"),
+            ("Authentication unsuccessful", "SMTP_USERNAME matches the Outlook account", None),
+        ]
+        for response, guidance, status in cases:
+            private = " private@example.invalid PRIVATE_ACCESS_TOKEN"
+            response = response + (private.encode() if isinstance(response, bytes) else private)
+            stderr = io.StringIO()
+            with self.subTest(response=response), patch("sys.argv", ["quotation.py", "--send-email"]), \
+                    patch.dict(os.environ, {"QUOTATION_REQUIREMENTS_JSON": ""}), \
+                    patch("quotation.render_pdf"), patch("builtins.print"), patch("sys.stderr", stderr), \
+                    patch("quotation.send_email", side_effect=smtplib.SMTPAuthenticationError(535, response)):
+                with self.assertRaises(SystemExit) as error:
+                    main()
+                self.assertEqual(error.exception.code, 1)
+                self.assertIn("SMTP 535", stderr.getvalue())
+                if status:
+                    self.assertIn(status, stderr.getvalue())
+                self.assertIn(guidance, stderr.getvalue())
+                self.assertNotIn("private@example.invalid", stderr.getvalue())
+                self.assertNotIn("PRIVATE_ACCESS_TOKEN", stderr.getvalue())
 
     def test_incomplete_outlook_credentials_do_not_fall_back_to_password(self):
         with patch.dict(os.environ, {"MICROSOFT_CLIENT_ID": "mock-client", "SMTP_PASSWORD": "unused"}, clear=True), \

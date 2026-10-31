@@ -2,7 +2,7 @@
 
 Enter materials and quantities, generate a mock quotation PDF, and email it to
 your configured address through GitHub Actions. The recipient can use any email
-provider. The sender must offer authenticated SMTP with TLS.
+provider. The sender uses SMTP with TLS, including Outlook.com OAuth sign-in.
 
 The sample follows the supplied Tripura Bhavan quotation's section structure:
 light fixtures, wires and consumables, labour, summary and terms. Other charges
@@ -32,22 +32,85 @@ duplicate catalogue codes and invalid tax percentages fail the run.
 
 ## Set up email once
 
+For the selected sender, **dlg-electrical-solutions@outlook.com**, follow the
+Outlook.com instructions below. Outlook.com requires OAuth, so a mailbox
+password or app password is not the authentication method used here.
+[Microsoft's Outlook.com settings](https://support.microsoft.com/en-us/outlook/pop-imap-and-smtp-settings-for-outlook-com).
+
+### Outlook.com sender
+
 Open this private repository on GitHub, then **Settings → Secrets and variables
-→ Actions**. Add these **repository variables**:
+→ Actions**. There are separate **Variables** and **Secrets** tabs.
+Under **Variables → New repository variable**, add each name/value separately:
 
 | Variable | Value |
 | --- | --- |
-| `SMTP_HOST` | Your sending provider's SMTP hostname |
-| `SMTP_PORT` | `587` for STARTTLS (default), or `465` for implicit TLS |
+| `SMTP_HOST` | `smtp-mail.outlook.com` |
+| `SMTP_PORT` | `587` |
 
-Add these **repository secrets**, not source files or workflow inputs:
+Under **Secrets → New repository secret**, enter the **Name**, paste its value
+into **Secret**, then click **Add secret**. Repeat for these five secrets:
 
 | Secret | Value |
 | --- | --- |
-| `SMTP_USERNAME` | SMTP login supplied by the sending provider |
-| `SMTP_PASSWORD` | SMTP credential or app password supplied by the sending provider |
-| `SMTP_FROM` | Sender address authorised by that provider |
-| `QUOTE_EMAIL_TO` | Your receiving email address, with any provider |
+| `SMTP_USERNAME` | `dlg-electrical-solutions@outlook.com` |
+| `SMTP_FROM` | `dlg-electrical-solutions@outlook.com` |
+| `QUOTE_EMAIL_TO` | Your receiving email address; use the same Outlook address for a self-test if desired |
+| `MICROSOFT_CLIENT_ID` | Application (client) ID from the app registration below |
+| `MICROSOFT_REFRESH_TOKEN` | Token created by the one-time local sign-in below |
+
+`SMTP_PASSWORD` is not needed for Outlook. If both
+Microsoft OAuth secrets are absent, the script retains password-based SMTP
+support for other sending services. If either OAuth secret is present, both
+are required; authentication failure does not fall back to a password.
+
+Register and authorise the application once:
+
+1. Open [Microsoft Entra app registrations](https://entra.microsoft.com/) and
+   choose **App registrations → New registration**. Name it `Quotation POC`.
+   Registration requires an Entra tenant where you have permission to register
+   an app; a personal Outlook mailbox alone does not provide that directory.
+   See [Microsoft's registration prerequisites](https://learn.microsoft.com/en-us/graph/auth-register-app-v2).
+2. Select **Personal Microsoft accounts only**, or **Accounts in any
+   organizational directory and personal Microsoft accounts**. Register it
+   and copy **Application (client) ID** into `MICROSOFT_CLIENT_ID` above.
+3. In the app's **Authentication** settings, set **Allow public client flows**
+   to **Yes** and save. No client secret or redirect URI is needed for this
+   device-code flow. The helper requests delegated `SMTP.Send` and
+   `offline_access` permissions when you sign in; do not choose application
+   permissions or the client-credentials flow.
+4. From this repository on your own computer, run:
+
+   ```sh
+   python3 outlook_auth.py --client-id YOUR_APPLICATION_CLIENT_ID
+   ```
+
+5. Open the Microsoft verification page shown by the helper, enter its code,
+   and sign in as **dlg-electrical-solutions@outlook.com**. Approve permission
+   to send mail. Only authorise a device code you just requested yourself.
+   This helper signs in only; it does not send email.
+6. The helper creates `.outlook-refresh-token` locally with private file
+   permissions. Copy its contents into the `MICROSOFT_REFRESH_TOKEN` repository
+   secret. On macOS, `pbcopy < .outlook-refresh-token` copies the token without
+   printing it. Once saved in GitHub, delete the local token file. It is also
+   Git-ignored. Do not paste it into chat, commit it, or put it in workflow inputs.
+
+The workflow renews the short-lived access token on every run. This POC does
+not write rotated refresh tokens back to GitHub Secrets. Re-run the local
+sign-in helper and replace `MICROSOFT_REFRESH_TOKEN` when authorisation expires
+or is revoked; remove any existing local token file first. Refresh tokens
+generally last 90 days for this flow but can be revoked earlier.
+[Microsoft token lifetime guidance](https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens).
+
+[Microsoft SMTP OAuth protocol](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth),
+[device-code sign-in](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code).
+
+### Other SMTP senders
+
+For other providers, set `SMTP_HOST` and `SMTP_PORT` to their SMTP settings
+(`587` for STARTTLS or `465` for implicit TLS). Keep `SMTP_USERNAME`, `SMTP_FROM`
+and `QUOTE_EMAIL_TO` as secrets, add a `SMTP_PASSWORD` secret, and leave the two
+`MICROSOFT_*` secrets unset. The sender address must be authorised by the provider.
 
 For example, a Gmail sender uses `smtp.gmail.com`, port `587`, your Gmail
 address as username/from, and an app password. Google requires 2-Step
@@ -56,10 +119,9 @@ Verification for app passwords, and availability depends on the account:
 You can send to an Outlook or business inbox from that Gmail sender.
 
 Other SMTP services work with their own credentials and authorised sender.
-This POC supports username/password or app-password authentication. Providers
-or organisations requiring OAuth-only authentication need a later integration;
-an ordinary account password does not necessarily enable SMTP. Get SMTP
-settings from your provider. Do not paste credentials into chat or commit them.
+OAuth support here is specifically for personal Outlook.com accounts. Other
+OAuth providers need their own integration. An ordinary account password does
+not necessarily enable SMTP. Get SMTP settings from your provider.
 
 ## Run the pipeline
 

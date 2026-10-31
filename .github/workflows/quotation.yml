@@ -36,6 +36,8 @@ jobs:
           SMTP_PORT: ${{ vars.SMTP_PORT || '587' }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
+          MICROSOFT_REFRESH_TOKEN: ${{ secrets.MICROSOFT_REFRESH_TOKEN }}
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           QUOTE_EMAIL_TO: ${{ secrets.QUOTE_EMAIL_TO }}
         run: python quotation.py --send-email

@@ -127,6 +127,34 @@ class QuotationTests(unittest.TestCase):
                 with self.assertRaises(smtplib.SMTPException):
                     send_email(path, "POC-001")
 
+    def test_outlook_uses_oauth_without_a_password(self):
+        settings = {"SMTP_HOST": "smtp-mail.outlook.com", "SMTP_USERNAME": "sender@outlook.com",
+                    "SMTP_FROM": "sender@outlook.com", "QUOTE_EMAIL_TO": "owner@another.invalid",
+                    "MICROSOFT_CLIENT_ID": "mock-client", "MICROSOFT_REFRESH_TOKEN": "mock-refresh"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quote.pdf"
+            path.write_bytes(b"%PDF-mock")
+            with patch.dict(os.environ, settings, clear=True), patch("quotation.smtplib.SMTP") as client, \
+                    patch("quotation.refresh_access_token", return_value="mock-access") as refresh:
+                smtp = client.return_value.__enter__.return_value
+                smtp.send_message.return_value = {}
+                send_email(path, "POC-001")
+                refresh.assert_called_once_with("mock-client", "mock-refresh")
+                smtp.login.assert_not_called()
+                smtp.auth.assert_called_once()
+                mechanism, callback = smtp.auth.call_args.args
+                self.assertEqual(mechanism, "XOAUTH2")
+                self.assertEqual(callback(), "user=sender@outlook.com\x01auth=Bearer mock-access\x01\x01")
+                self.assertEqual(callback(b"error challenge"), "")
+                self.assertEqual([call[0] for call in smtp.mock_calls], ["starttls", "ehlo", "auth", "send_message"])
+
+    def test_incomplete_outlook_credentials_do_not_fall_back_to_password(self):
+        with patch.dict(os.environ, {"MICROSOFT_CLIENT_ID": "mock-client", "SMTP_PASSWORD": "unused"}, clear=True), \
+                patch("quotation.smtplib.SMTP") as client:
+            with self.assertRaisesRegex(ValueError, "MICROSOFT_REFRESH_TOKEN"):
+                send_email(Path("unused.pdf"), "POC-001")
+            client.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

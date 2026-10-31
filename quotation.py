@@ -19,6 +19,8 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from outlook_auth import refresh_access_token
+
 ROOT = Path(__file__).resolve().parent
 CENT = Decimal("0.01")
 GROUPS = ("Light Fixtures", "Wires and Consumables", "Labour Charges", "Other Charges")
@@ -180,7 +182,9 @@ def render_pdf(path, request, result, template):
 
 
 def send_email(path, quote_id):
-    names = ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "QUOTE_EMAIL_TO")
+    oauth = bool(os.environ.get("MICROSOFT_CLIENT_ID") or os.environ.get("MICROSOFT_REFRESH_TOKEN"))
+    credentials = ("MICROSOFT_CLIENT_ID", "MICROSOFT_REFRESH_TOKEN") if oauth else ("SMTP_PASSWORD",)
+    names = ("SMTP_HOST", "SMTP_USERNAME", "SMTP_FROM", "QUOTE_EMAIL_TO") + credentials
     missing = [name for name in names if not os.environ.get(name)]
     if missing:
         raise ValueError("Missing email settings: " + ", ".join(missing))
@@ -196,13 +200,18 @@ def send_email(path, quote_id):
     message.set_content("Attached is your mock electrical quotation. All prices and tax settings are illustrative.\n")
     message.add_attachment(path.read_bytes(), maintype="application", subtype="pdf", filename=path.name)
     context = ssl.create_default_context()
-    # shortcut: authenticated SMTP only; add OAuth when the chosen sender requires it.
+    token = refresh_access_token(os.environ["MICROSOFT_CLIENT_ID"], os.environ["MICROSOFT_REFRESH_TOKEN"]) if oauth else None
     client = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
     options = {"context": context} if port == 465 else {}
     with client(os.environ["SMTP_HOST"], port, timeout=30, **options) as smtp:
         if port != 465:
             smtp.starttls(context=context)
-        smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+        if oauth:
+            smtp.ehlo()
+            auth = f'user={os.environ["SMTP_USERNAME"]}\x01auth=Bearer {token}\x01\x01'
+            smtp.auth("XOAUTH2", lambda challenge=None: auth if challenge is None else "")
+        else:
+            smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
         refused = smtp.send_message(message)
         if refused:
             raise smtplib.SMTPException("Recipient rejected")

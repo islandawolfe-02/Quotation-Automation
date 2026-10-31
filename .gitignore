@@ -222,3 +222,4 @@ __marimo__/
 # Generated quotations and local render checks
 output/
 tmp/
+.outlook-refresh-token

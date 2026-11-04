@@ -17,18 +17,118 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from xml.sax.saxutils import escape
+from zipfile import BadZipFile
 from zoneinfo import ZoneInfo
+
+from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from outlook_auth import refresh_access_token
 
 ROOT = Path(__file__).resolve().parent
 CENT = Decimal("0.01")
 GROUPS = ("Light Fixtures", "Wires and Consumables", "Labour Charges", "Other Charges")
+EXCEL_COLUMNS = ("Item Code", "Item Name", "Quantity", "Specs", "Poles", "Unit", "Rate INR", "Tax %", "Category", "Brand", "Area")
+
+
+def excel_value(cell):
+    if cell.data_type in ("f", "e"):
+        raise ValueError(f"{cell.parent.title}!{cell.coordinate} must contain a plain value, not a formula or Excel error")
+    return cell.value
+
+
+def excel_rows(sheet, header_row):
+    headers = [excel_value(cell) for cell in sheet[header_row]]
+    if any(headers.count(name) != 1 for name in EXCEL_COLUMNS):
+        raise ValueError(f"{sheet.title} row {header_row} must contain each template column exactly once")
+    for cells in sheet.iter_rows(min_row=header_row + 1):
+        values = {name: excel_value(cells[headers.index(name)]) for name in EXCEL_COLUMNS}
+        if any(value is not None for value in values.values()):
+            yield cells[0].row, values
+
+
+def load_excel_inputs(master_path, client_path):
+    try:
+        master = load_workbook(master_path, read_only=True, data_only=False, keep_links=False)
+        try:
+            if "Catalogue" not in master.sheetnames:
+                raise ValueError("Master workbook needs a Catalogue worksheet")
+            entries = {}
+            for row_number, row in excel_rows(master["Catalogue"], 5):
+                location = f"Catalogue row {row_number}"
+                code = text(row["Item Code"], f"{location} Item Code")
+                if code in entries:
+                    raise ValueError(f"Duplicate Item Code in {location}")
+                if number(row["Quantity"], f"{location} Quantity", positive=True) != 1:
+                    raise ValueError(f"{location} Quantity must be 1; Rate INR is the price per Unit")
+                for field in ("Item Name", "Specs", "Poles", "Unit", "Category", "Brand"):
+                    text(row[field], f"{location} {field}")
+                if row["Item Name"].strip().upper() in ("MCB", "RCCB", "RCBO", "SPD", "ISOLATOR") and row["Poles"].strip().upper() == "N/A":
+                    raise ValueError(f"{location} needs Poles for its protective device")
+                specification = row["Specs"].strip()
+                if row["Poles"].strip().upper() != "N/A":
+                    specification += f'; {row["Poles"].strip()}'
+                entry = {"code": code, "description": row["Item Name"].strip(),
+                         "category": row["Category"].strip(), "unit": row["Unit"].strip(),
+                         "specification": f'{row["Brand"].strip()} | {specification}',
+                         "rate": row["Rate INR"], "tax_percent": row["Tax %"]}
+                entries[code] = (row, entry)
+        finally:
+            master.close()
+        client = load_workbook(client_path, read_only=True, data_only=False, keep_links=False)
+        try:
+            if "Requirements" not in client.sheetnames:
+                raise ValueError("Client workbook needs a Requirements worksheet")
+            sheet = client["Requirements"]
+            request = {"materials": [], "charges": []}
+            fields = (("Client Name", "customer"), ("Address", "customer_address"),
+                      ("Contact", "customer_contact"), ("Site", "site"),
+                      ("Quotation ID", "quotation_id"), ("Validity Days", "validity_days"))
+            for position, (label, field) in enumerate(fields, 4):
+                if excel_value(sheet.cell(position, 1)) != label:
+                    raise ValueError(f"Requirements!A{position} must be labelled {label}")
+                value = excel_value(sheet.cell(position, 2))
+                request[field] = value if field == "validity_days" else text(value, f"Requirements!B{position}")
+            for row_number, row in excel_rows(sheet, 12):
+                location = f"Requirements row {row_number}"
+                quantity = number(row["Quantity"] if row["Quantity"] is not None else 0, f"{location} Quantity")
+                if quantity == 0:
+                    continue
+                code = text(row["Item Code"], f"{location} Item Code")
+                if code not in entries:
+                    raise ValueError(f"Unknown Item Code in {location}; copy the component from the master")
+                original, entry = entries[code]
+                for field in ("Item Name", "Specs", "Poles", "Unit", "Category", "Brand"):
+                    if text(row[field], f"{location} {field}").casefold() != original[field].strip().casefold():
+                        raise ValueError(f"{location} {field} does not match the master; copy the current component row")
+                kind = "materials" if entry["category"] in GROUPS[:2] else "charges"
+                request[kind].append({"code": code, "quantity": quantity, "area": row["Area"] or "General"})
+        finally:
+            client.close()
+        catalogue = [entry for _, entry in entries.values() if entry["category"] in GROUPS[:2]]
+        charges = [entry for _, entry in entries.values() if entry["category"] not in GROUPS[:2]]
+        return request, catalogue, charges
+    except (BadZipFile, InvalidFileException, KeyError):
+        raise ValueError("Could not read the Excel templates. Use valid .xlsx workbooks with the supplied sheet names and columns.") from None
+
+
+def recipient_addresses():
+    aliases = os.environ.get("QUOTE_RECIPIENT_ALIASES")
+    if aliases is None and os.environ.get("QUOTE_EMAIL_TO"):
+        return os.environ["QUOTE_EMAIL_TO"]
+    registry = load_json(ROOT / "config/recipients.json")
+    selected = [alias.strip() for alias in (aliases if aliases is not None else "office").split(",")]
+    if not isinstance(registry, dict) or not selected or any(not alias or alias not in registry for alias in selected):
+        raise ValueError("Choose at least one configured recipient alias from config/recipients.json")
+    addresses = [text(registry[alias], "Configured recipient address") for alias in dict.fromkeys(selected)]
+    if any(address.lower().endswith(".invalid") for address in addresses):
+        raise ValueError("Replace the selected demo addresses in config/recipients.json before sending")
+    return ",".join(addresses)
 
 
 def load_json(path):
@@ -59,6 +159,9 @@ def calculate(request, catalogue, charges):
         raise ValueError("quotation_id must contain 1-60 letters, numbers, underscores or hyphens")
     for field in ("customer", "site"):
         text(request.get(field), field)
+    for field in ("customer_address", "customer_contact"):
+        if field in request:
+            text(request[field], field)
     validity = request.get("validity_days")
     if type(validity) is not int or not 1 <= validity <= 365:
         raise ValueError("validity_days must be a whole number from 1 to 365")
@@ -131,6 +234,12 @@ def render_pdf(path, request, result, template):
         return tab
 
     business = template["business"]
+    customer_details = f'Prepared for: {request["customer"]}'
+    if request.get("customer_address"):
+        customer_details += f'\nAddress: {request["customer_address"]}'
+    if request.get("customer_contact"):
+        customer_details += f'\nContact: {request["customer_contact"]}'
+    customer_details += f'\nSite: {request["site"]}'
     today = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
     story = [paragraph(business["name"], "Title"),
              paragraph("Electrical Works Quotation", "Heading2"),
@@ -138,18 +247,12 @@ def render_pdf(path, request, result, template):
              paragraph(f'{business["address"]}\n{business["phone"]} | {business["email"]}\n{business["registration"]}'),
              Spacer(1, 3 * mm),
              paragraph(f'Quotation: {request["quotation_id"]} | Date: {today} | Validity: {request["validity_days"]} days'),
-             paragraph(f'Prepared for: {request["customer"]}\nSite: {request["site"]}'),
+             paragraph(customer_details),
              paragraph("All amounts are in INR. Line amounts exclude tax; tax is shown separately in the summary.")]
-    if any(line["category"] in GROUPS[2:] for line in result["lines"]):
-        second_page_category = next(group for group in GROUPS[2:] if any(line["category"] == group for line in result["lines"]))
-    else:
-        second_page_category = None
     for category in GROUPS:
         lines = [line for line in result["lines"] if line["category"] == category]
         if not lines:
             continue
-        if category == second_page_category:
-            story.append(PageBreak())
         story.append(paragraph(category, "Heading2"))
         rows = [["Area / Description", "Specification", "Qty / Unit", "Rate INR", "Amount INR"]]
         for line in lines:
@@ -160,7 +263,6 @@ def render_pdf(path, request, result, template):
         total = sum((line["amount"] for line in lines), Decimal("0.00"))
         story.append(paragraph(f"{category} subtotal: INR {total:,.2f}"))
 
-    story.append(paragraph("Quotation Summary", "Heading2"))
     rows = [["Scope / Category", "Amount INR"]]
     for category in GROUPS:
         amount = sum((line["amount"] for line in result["lines"] if line["category"] == category), Decimal("0.00"))
@@ -168,7 +270,7 @@ def render_pdf(path, request, result, template):
     rows.extend([["Subtotal before tax", f'{result["subtotal"]:,.2f}'],
                  ["Tax (illustrative settings)", f'{result["tax"]:,.2f}'],
                  ["Grand Total", f'{result["total"]:,.2f}']])
-    story.append(table(rows, [135 * mm, 45 * mm], (1,)))
+    story.append(KeepTogether([paragraph("Quotation Summary", "Heading2"), table(rows, [135 * mm, 45 * mm], (1,))]))
     story.append(paragraph("Terms and Conditions", "Heading2"))
     for index, term in enumerate(template["terms"], 1):
         story.append(paragraph(f"{index}. {term}"))
@@ -189,21 +291,22 @@ def render_pdf(path, request, result, template):
 def send_email(path, quote_id):
     oauth = bool(os.environ.get("MICROSOFT_CLIENT_ID") or os.environ.get("MICROSOFT_REFRESH_TOKEN"))
     credentials = ("MICROSOFT_CLIENT_ID", "MICROSOFT_REFRESH_TOKEN") if oauth else ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD")
-    names = ("SMTP_FROM", "QUOTE_EMAIL_TO") + credentials
+    names = ("SMTP_FROM",) + credentials
     missing = [name for name in names if not os.environ.get(name)]
     if missing:
         raise ValueError("Missing email settings: " + ", ".join(missing))
     sender = str(Address(addr_spec=text(os.environ["SMTP_FROM"], "SMTP_FROM")))
+    configured_recipients = recipient_addresses()
     try:
-        recipients = [Address(addr_spec=value.strip()) for value in os.environ["QUOTE_EMAIL_TO"].split(",")]
+        recipients = [Address(addr_spec=value.strip()) for value in configured_recipients.split(",")]
         if any(not address.username or not address.domain for address in recipients):
             raise ValueError
     except (ValueError, HeaderParseError):
-        raise ValueError("QUOTE_EMAIL_TO must contain valid email addresses separated by commas, with no empty entries.") from None
+        raise ValueError("Recipients must contain valid email addresses separated by commas, with no empty entries.") from None
     message = EmailMessage()
     message["Subject"] = f"Mock electrical quotation {quote_id}"
     message["From"] = sender
-    message["To"] = recipients
+    message["Bcc"] = recipients
     message.set_content("Attached is your mock electrical quotation. All prices and tax settings are illustrative.\n")
     message.add_attachment(path.read_bytes(), maintype="application", subtype="pdf", filename=path.name)
     if oauth:
@@ -247,13 +350,18 @@ def send_email(path, quote_id):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--requirements", type=Path, default=ROOT / "examples/requirements.json")
+    parser.add_argument("--requirements", type=Path, default=ROOT / "examples/client_requirements.xlsx")
+    parser.add_argument("--catalogue", type=Path, default=ROOT / "data/master_catalogue.xlsx")
     parser.add_argument("--send-email", action="store_true")
     args = parser.parse_args()
     try:
         raw = os.environ.get("QUOTATION_REQUIREMENTS_JSON", "").strip()
-        request = json.loads(raw, parse_float=Decimal) if raw else load_json(args.requirements)
-        result = calculate(request, load_json(ROOT / "data/catalogue.json"), load_json(ROOT / "data/charges.json"))
+        if not raw and args.requirements.suffix.lower() == ".xlsx":
+            request, catalogue, charges = load_excel_inputs(args.catalogue, args.requirements)
+        else:
+            request = json.loads(raw, parse_float=Decimal) if raw else load_json(args.requirements)
+            catalogue, charges = load_json(ROOT / "data/catalogue.json"), load_json(ROOT / "data/charges.json")
+        result = calculate(request, catalogue, charges)
         output = ROOT / "output/pdf" / f'{request["quotation_id"]}.pdf'
         render_pdf(output, request, result, load_json(ROOT / "templates/quotation.json"))
         print("Mock quotation PDF generated successfully.", flush=True)

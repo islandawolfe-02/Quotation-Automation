@@ -5,10 +5,29 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      requirements_json:
-        description: 'Optional requirements JSON; leave blank to use examples/requirements.json'
-        required: false
+      requirements_file:
+        description: 'Client workbook path in this branch'
+        required: true
+        default: examples/client_requirements.xlsx
         type: string
+      catalogue_file:
+        description: 'Master catalogue workbook path in this branch'
+        required: true
+        default: data/master_catalogue.xlsx
+        type: string
+      recipients:
+        description: 'Recipient aliases (addresses are stored in the private configuration file)'
+        required: true
+        type: choice
+        default: office
+        options:
+          - office
+          - accounts
+          - owner
+          - office,accounts
+          - office,owner
+          - accounts,owner
+          - office,accounts,owner
 
 permissions:
   contents: read
@@ -31,7 +50,9 @@ jobs:
       - name: Generate and email quotation
         if: github.event_name == 'workflow_dispatch'
         env:
-          QUOTATION_REQUIREMENTS_JSON: ${{ inputs.requirements_json }}
+          REQUIREMENTS_FILE: ${{ inputs.requirements_file }}
+          CATALOGUE_FILE: ${{ inputs.catalogue_file }}
+          QUOTE_RECIPIENT_ALIASES: ${{ inputs.recipients }}
           SMTP_HOST: ${{ vars.SMTP_HOST }}
           SMTP_PORT: ${{ vars.SMTP_PORT || '587' }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
@@ -39,8 +60,7 @@ jobs:
           MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
           MICROSOFT_REFRESH_TOKEN: ${{ secrets.MICROSOFT_REFRESH_TOKEN }}
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
-          QUOTE_EMAIL_TO: ${{ secrets.QUOTE_EMAIL_TO }}
-        run: python quotation.py --send-email
+        run: python quotation.py --requirements "$REQUIREMENTS_FILE" --catalogue "$CATALOGUE_FILE" --send-email
       - name: Remove generated PDFs
         if: always()
         run: rm -rf output/pdf

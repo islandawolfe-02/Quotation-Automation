@@ -10,10 +10,11 @@ from decimal import Decimal
 from email import message_from_bytes
 from email.policy import default
 from pathlib import Path
-from unittest.mock import patch
+from smtplib import SMTP as SMTPClient
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from quotation import ROOT, calculate, load_json, main, render_pdf, send_email
+from quotation import ROOT, calculate, load_json, main, recipient_addresses, render_pdf, send_email
 
 
 class QuotationTests(unittest.TestCase):
@@ -91,6 +92,15 @@ class QuotationTests(unittest.TestCase):
                 main()
             send.assert_called_once_with(ROOT / "output/pdf/POC-PIPELINE.pdf", "POC-PIPELINE")
 
+    def test_default_cli_uses_excel_workbooks(self):
+        with patch("sys.argv", ["quotation.py"]), patch.dict(os.environ, {"QUOTATION_REQUIREMENTS_JSON": ""}), \
+                patch("quotation.load_excel_inputs", return_value=(self.request, self.catalogue, self.charges)) as load, \
+                patch("quotation.render_pdf") as render, patch("quotation.send_email") as send, patch("builtins.print"):
+            main()
+            load.assert_called_once_with(ROOT / "data/master_catalogue.xlsx", ROOT / "examples/client_requirements.xlsx")
+            self.assertEqual(render.call_args.args[1], self.request)
+            send.assert_not_called()
+
     def test_email_tls_attachment_and_recipient(self):
         settings = {"SMTP_HOST": "smtp.example.invalid", "SMTP_PORT": "587",
                     "SMTP_USERNAME": "smtp-user", "SMTP_PASSWORD": "mock-password",
@@ -111,7 +121,8 @@ class QuotationTests(unittest.TestCase):
                     else:
                         smtp.starttls.assert_not_called()
                     message = smtp.send_message.call_args.args[0]
-                    self.assertEqual(message["To"], "owner@another.invalid")
+                    self.assertEqual(message["Bcc"], "owner@another.invalid")
+                    self.assertIsNone(message["To"])
                     self.assertEqual(message["From"], "sender@example.invalid")
                     attachment = next(message.iter_attachments())
                     self.assertEqual(attachment.get_content_type(), "application/pdf")
@@ -144,7 +155,13 @@ class QuotationTests(unittest.TestCase):
                 smtp.send_message.return_value = {}
                 send_email(path, "POC-001")
                 message = smtp.send_message.call_args.args[0]
-                self.assertEqual([address.addr_spec for address in message["To"].addresses], expected)
+                self.assertEqual([address.addr_spec for address in message["Bcc"].addresses], expected)
+                transport = SMTPClient()
+                transport.ehlo_or_helo_if_needed = Mock()
+                transport.sendmail = Mock(return_value={})
+                transport.send_message(message)
+                self.assertEqual(transport.sendmail.call_args.args[1], expected)
+                self.assertNotIn(b"Bcc:", transport.sendmail.call_args.args[2])
                 smtp.send_message.return_value = {expected[1]: (550, b"Rejected")}
                 with self.assertRaises(smtplib.SMTPException):
                     send_email(path, "POC-001")
@@ -154,7 +171,8 @@ class QuotationTests(unittest.TestCase):
                 open_url.return_value.__enter__.return_value.status = 202
                 send_email(path, "POC-001")
                 message = message_from_bytes(base64.b64decode(open_url.call_args.args[0].data), policy=default)
-                self.assertEqual([address.addr_spec for address in message["To"].addresses], expected)
+                self.assertEqual([address.addr_spec for address in message["Bcc"].addresses], expected)
+                self.assertIsNone(message["To"])
                 self.assertEqual(next(message.iter_attachments()).get_payload(decode=True), b"%PDF-mock")
 
     def test_invalid_recipient_lists_fail_before_authentication_or_sending(self):
@@ -198,7 +216,8 @@ class QuotationTests(unittest.TestCase):
                 message = message_from_bytes(base64.b64decode(request.data, validate=True), policy=default)
                 self.assertEqual(message["Subject"], "Mock electrical quotation POC-001")
                 self.assertEqual(message["From"], "sender@outlook.com")
-                self.assertEqual(message["To"], "owner@another.invalid")
+                self.assertEqual(message["Bcc"], "owner@another.invalid")
+                self.assertIsNone(message["To"])
                 attachment = next(message.iter_attachments())
                 self.assertEqual(attachment.get_filename(), "quote.pdf")
                 self.assertEqual(attachment.get_content_type(), "application/pdf")
@@ -222,6 +241,23 @@ class QuotationTests(unittest.TestCase):
                     client.assert_not_called()
                     self.assertNotIn("PRIVATE", str(raised.exception))
                     self.assertNotIn("private@example.invalid", str(raised.exception))
+
+    def test_recipient_aliases_cover_every_nonempty_subset(self):
+        registry = {"office": "office@example.com", "accounts": "accounts@example.org", "owner": "owner@example.net"}
+        from itertools import combinations
+        for size in (1, 2, 3):
+            for selected in combinations(registry, size):
+                with self.subTest(selected=selected), patch.dict(os.environ, {"QUOTE_RECIPIENT_ALIASES": ",".join(selected)}, clear=True), \
+                        patch("quotation.load_json", return_value=registry):
+                    self.assertEqual(recipient_addresses().split(","), [registry[alias] for alias in selected])
+        for selected in ("", "office,", "unknown"):
+            with self.subTest(selected=selected), patch.dict(os.environ, {"QUOTE_RECIPIENT_ALIASES": selected}, clear=True), \
+                    patch("quotation.load_json", return_value=registry), self.assertRaisesRegex(ValueError, "recipient alias"):
+                recipient_addresses()
+        with patch.dict(os.environ, {"QUOTE_RECIPIENT_ALIASES": "office"}, clear=True), \
+                patch("quotation.load_json", return_value={"office": "office@example.invalid"}), \
+                self.assertRaisesRegex(ValueError, "Replace the selected demo addresses"):
+            recipient_addresses()
 
     def test_graph_requires_confirmed_submission_and_a_valid_token(self):
         settings = {"SMTP_FROM": "sender@outlook.com", "QUOTE_EMAIL_TO": "owner@another.invalid",
@@ -253,7 +289,7 @@ class QuotationTests(unittest.TestCase):
             response = response + (private.encode() if isinstance(response, bytes) else private)
             stderr = io.StringIO()
             with self.subTest(response=response), patch("sys.argv", ["quotation.py", "--send-email"]), \
-                    patch.dict(os.environ, {"QUOTATION_REQUIREMENTS_JSON": ""}), \
+                    patch.dict(os.environ, {"QUOTATION_REQUIREMENTS_JSON": json.dumps(self.request)}), \
                     patch("quotation.render_pdf"), patch("builtins.print"), patch("sys.stderr", stderr), \
                     patch("quotation.send_email", side_effect=smtplib.SMTPAuthenticationError(535, response)):
                 with self.assertRaises(SystemExit) as error:

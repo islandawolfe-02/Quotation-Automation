@@ -223,3 +223,6 @@ __marimo__/
 output/
 tmp/
 .outlook-refresh-token
+
+#Codex Reference Files
+AGENTS.md

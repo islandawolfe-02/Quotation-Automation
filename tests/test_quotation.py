@@ -1,13 +1,13 @@
 import base64
 import copy
 import io
-import json
 import os
 import smtplib
 import tempfile
 import unittest
 from decimal import Decimal
 from email import message_from_bytes
+from email.headerregistry import Address
 from email.policy import default
 from pathlib import Path
 from smtplib import SMTP as SMTPClient
@@ -19,9 +19,13 @@ from quotation import ROOT, calculate, load_json, main, recipient_addresses, ren
 
 class QuotationTests(unittest.TestCase):
     def setUp(self):
-        self.request = load_json(ROOT / "examples/requirements.json")
-        self.catalogue = load_json(ROOT / "data/catalogue.json")
-        self.charges = load_json(ROOT / "data/charges.json")
+        fixture = load_json(ROOT / "tests/fixtures/quotation.json")
+        self.request = fixture["request"]
+        self.catalogue = fixture["catalogue"]
+        self.charges = fixture["charges"]
+        recipient_patch = patch("quotation.recipient_addresses", return_value=[Address(addr_spec="owner@another.invalid")])
+        self.recipient_mock = recipient_patch.start()
+        self.addCleanup(recipient_patch.stop)
 
     def calculate(self):
         return calculate(self.request, self.catalogue, self.charges)
@@ -79,9 +83,9 @@ class QuotationTests(unittest.TestCase):
             self.assertTrue(path.read_bytes().startswith(b"%PDF-"))
             self.assertGreater(path.stat().st_size, 1000)
 
-    def test_pipeline_json_overrides_sample_and_sends_only_when_requested(self):
+    def test_cli_sends_only_when_requested(self):
         request = {**self.request, "quotation_id": "POC-PIPELINE"}
-        with patch.dict(os.environ, {"QUOTATION_REQUIREMENTS_JSON": json.dumps(request)}), \
+        with patch("quotation.load_excel_inputs", return_value=(request, self.catalogue, self.charges)), \
                 patch("quotation.render_pdf") as render, patch("quotation.send_email") as send, \
                 patch("builtins.print"):
             with patch("sys.argv", ["quotation.py"]):
@@ -93,7 +97,7 @@ class QuotationTests(unittest.TestCase):
             send.assert_called_once_with(ROOT / "output/pdf/POC-PIPELINE.pdf", "POC-PIPELINE")
 
     def test_default_cli_uses_excel_workbooks(self):
-        with patch("sys.argv", ["quotation.py"]), patch.dict(os.environ, {"QUOTATION_REQUIREMENTS_JSON": ""}), \
+        with patch("sys.argv", ["quotation.py"]), \
                 patch("quotation.load_excel_inputs", return_value=(self.request, self.catalogue, self.charges)) as load, \
                 patch("quotation.render_pdf") as render, patch("quotation.send_email") as send, patch("builtins.print"):
             main()
@@ -104,7 +108,7 @@ class QuotationTests(unittest.TestCase):
     def test_email_tls_attachment_and_recipient(self):
         settings = {"SMTP_HOST": "smtp.example.invalid", "SMTP_PORT": "587",
                     "SMTP_USERNAME": "smtp-user", "SMTP_PASSWORD": "mock-password",
-                    "SMTP_FROM": "sender@example.invalid", "QUOTE_EMAIL_TO": "owner@another.invalid"}
+                    "SMTP_FROM": "sender@example.invalid"}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "POC-001.pdf"
             path.write_bytes(b"%PDF-mock")
@@ -133,8 +137,7 @@ class QuotationTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, "Missing email settings"):
             send_email(Path("unused.pdf"), "POC-001")
         settings = {"SMTP_HOST": "smtp.example.invalid", "SMTP_USERNAME": "sender@example.invalid",
-                    "SMTP_PASSWORD": "mock-password", "SMTP_FROM": "sender@example.invalid",
-                    "QUOTE_EMAIL_TO": "owner@another.invalid"}
+                    "SMTP_PASSWORD": "mock-password", "SMTP_FROM": "sender@example.invalid"}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quote.pdf"
             path.write_bytes(b"%PDF-mock")
@@ -144,9 +147,10 @@ class QuotationTests(unittest.TestCase):
                     send_email(path, "POC-001")
 
     def test_multiple_recipients_in_graph_and_smtp(self):
-        settings = {"SMTP_FROM": "sender@example.invalid", "QUOTE_EMAIL_TO": " owner@another.invalid, accounts@example.invalid ",
+        settings = {"SMTP_FROM": "sender@example.invalid",
                     "SMTP_HOST": "smtp.example.invalid", "SMTP_USERNAME": "smtp-user", "SMTP_PASSWORD": "mock-password"}
         expected = ["owner@another.invalid", "accounts@example.invalid"]
+        self.recipient_mock.return_value = [Address(addr_spec=value) for value in expected]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quote.pdf"
             path.write_bytes(b"%PDF-mock")
@@ -175,17 +179,18 @@ class QuotationTests(unittest.TestCase):
                 self.assertIsNone(message["To"])
                 self.assertEqual(next(message.iter_attachments()).get_payload(decode=True), b"%PDF-mock")
 
-    def test_invalid_recipient_lists_fail_before_authentication_or_sending(self):
+    def test_invalid_partner_email_fails_before_authentication_or_sending(self):
         settings = {"SMTP_FROM": "sender@example.invalid", "MICROSOFT_CLIENT_ID": "mock-client",
                     "MICROSOFT_REFRESH_TOKEN": "mock-refresh"}
         invalid = [" ", "not-an-email", "owner@", "@example.invalid", "a@example.invalid,",
                    "a@example.invalid,,b@example.invalid", "a@example.invalid;b@example.invalid",
                    "a@example.invalid, private-invalid-entry", "a@example.invalid\r\nBcc: b@example.invalid"]
+        self.recipient_mock.side_effect = recipient_addresses
         for recipients in invalid:
-            with self.subTest(recipients=recipients), patch.dict(os.environ, {**settings, "QUOTE_EMAIL_TO": recipients}, clear=True), \
+            with self.subTest(recipients=recipients), patch.dict(os.environ, {**settings, "PARTNER_1_EMAIL": recipients}, clear=True), \
                     patch("quotation.refresh_access_token") as refresh, patch("quotation.urlopen") as open_url, \
                     patch("quotation.smtplib.SMTP") as smtp:
-                with self.assertRaisesRegex(ValueError, "valid email addresses separated by commas") as error:
+                with self.assertRaises(ValueError) as error:
                     send_email(Path("unused.pdf"), "POC-001")
                 self.assertNotIn("private-invalid-entry", str(error.exception))
                 refresh.assert_not_called()
@@ -194,7 +199,7 @@ class QuotationTests(unittest.TestCase):
 
     def test_outlook_uses_graph_and_attaches_pdf_without_smtp(self):
         settings = {"SMTP_PORT": "unused-invalid-port", "SMTP_FROM": " sender@outlook.com\n",
-                    "QUOTE_EMAIL_TO": " owner@another.invalid\n",
+
                     "MICROSOFT_CLIENT_ID": "mock-client", "MICROSOFT_REFRESH_TOKEN": "mock-refresh"}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quote.pdf"
@@ -224,7 +229,7 @@ class QuotationTests(unittest.TestCase):
                 self.assertEqual(attachment.get_payload(decode=True), b"%PDF-mock")
 
     def test_graph_failures_are_private_and_do_not_retry_or_fall_back(self):
-        settings = {"SMTP_FROM": "sender@outlook.com", "QUOTE_EMAIL_TO": "owner@another.invalid",
+        settings = {"SMTP_FROM": "sender@outlook.com",
                     "MICROSOFT_CLIENT_ID": "mock-client", "MICROSOFT_REFRESH_TOKEN": "mock-refresh"}
         for status in (401, 403, 429, 500):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
@@ -242,25 +247,52 @@ class QuotationTests(unittest.TestCase):
                     self.assertNotIn("PRIVATE", str(raised.exception))
                     self.assertNotIn("private@example.invalid", str(raised.exception))
 
-    def test_recipient_aliases_cover_every_nonempty_subset(self):
-        registry = {"office": "office@example.com", "accounts": "accounts@example.org", "owner": "owner@example.net"}
+    def test_partner_checkboxes_cover_every_nonempty_subset(self):
+        emails = {1: "office@example.com", 2: "accounts@example.org", 3: "owner@example.net"}
         from itertools import combinations
         for size in (1, 2, 3):
-            for selected in combinations(registry, size):
-                with self.subTest(selected=selected), patch.dict(os.environ, {"QUOTE_RECIPIENT_ALIASES": ",".join(selected)}, clear=True), \
-                        patch("quotation.load_json", return_value=registry):
-                    self.assertEqual(recipient_addresses().split(","), [registry[alias] for alias in selected])
-        for selected in ("", "office,", "unknown"):
-            with self.subTest(selected=selected), patch.dict(os.environ, {"QUOTE_RECIPIENT_ALIASES": selected}, clear=True), \
-                    patch("quotation.load_json", return_value=registry), self.assertRaisesRegex(ValueError, "recipient alias"):
-                recipient_addresses()
-        with patch.dict(os.environ, {"QUOTE_RECIPIENT_ALIASES": "office"}, clear=True), \
-                patch("quotation.load_json", return_value={"office": "office@example.invalid"}), \
-                self.assertRaisesRegex(ValueError, "Replace the selected demo addresses"):
+            for selected in combinations(emails, size):
+                settings = {f"SEND_PARTNER_{partner}": str(partner in selected).lower() for partner in emails}
+                settings.update({f"PARTNER_{partner}_EMAIL": address for partner, address in emails.items()})
+                with self.subTest(selected=selected), patch.dict(os.environ, settings, clear=True):
+                    self.assertEqual([address.addr_spec for address in recipient_addresses()], [emails[partner] for partner in selected])
+        with patch.dict(os.environ, {"SEND_PARTNER_1": "false", "SEND_PARTNER_2": "false", "SEND_PARTNER_3": "false"}, clear=True), \
+                self.assertRaisesRegex(ValueError, "Select at least one partner"):
             recipient_addresses()
+        with patch.dict(os.environ, {"SEND_PARTNER_1": "yes"}, clear=True), \
+                self.assertRaisesRegex(ValueError, "must be true or false"):
+            recipient_addresses()
+        with patch.dict(os.environ, {"SEND_PARTNER_1": "false", "SEND_PARTNER_2": "true"}, clear=True), \
+                self.assertRaisesRegex(ValueError, "PARTNER_2_EMAIL"):
+            recipient_addresses()
+        with patch.dict(os.environ, {"PARTNER_1_EMAIL": " partner@example.com\n", "PARTNER_2_EMAIL": "bad-unselected-address"}, clear=True):
+            self.assertEqual([address.addr_spec for address in recipient_addresses()], ["partner@example.com"])
+
+    def test_zero_partners_fail_before_loading_or_generating_quotation(self):
+        self.recipient_mock.side_effect = recipient_addresses
+        flags = {f"SEND_PARTNER_{partner}": "false" for partner in (1, 2, 3)}
+        error = io.StringIO()
+        with patch.dict(os.environ, flags, clear=True), patch("sys.argv", ["quotation.py", "--send-email"]), \
+                patch("quotation.load_excel_inputs") as load, patch("quotation.render_pdf") as render, \
+                patch("quotation.send_email") as send, patch("sys.stderr", error):
+            with self.assertRaises(SystemExit) as raised:
+                main()
+            self.assertEqual(raised.exception.code, 1)
+            self.assertIn("Select at least one partner", error.getvalue())
+            load.assert_not_called()
+            render.assert_not_called()
+            send.assert_not_called()
+
+    def test_cli_rejects_obsolete_json_input(self):
+        with patch("sys.argv", ["quotation.py", "--requirements", "job.json"]), \
+                patch("quotation.load_excel_inputs") as load, patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                main()
+            self.assertEqual(raised.exception.code, 1)
+            load.assert_not_called()
 
     def test_graph_requires_confirmed_submission_and_a_valid_token(self):
-        settings = {"SMTP_FROM": "sender@outlook.com", "QUOTE_EMAIL_TO": "owner@another.invalid",
+        settings = {"SMTP_FROM": "sender@outlook.com",
                     "MICROSOFT_CLIENT_ID": "mock-client", "MICROSOFT_REFRESH_TOKEN": "mock-refresh"}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quote.pdf"
@@ -289,7 +321,7 @@ class QuotationTests(unittest.TestCase):
             response = response + (private.encode() if isinstance(response, bytes) else private)
             stderr = io.StringIO()
             with self.subTest(response=response), patch("sys.argv", ["quotation.py", "--send-email"]), \
-                    patch.dict(os.environ, {"QUOTATION_REQUIREMENTS_JSON": json.dumps(self.request)}), \
+                    patch("quotation.load_excel_inputs", return_value=(self.request, self.catalogue, self.charges)), \
                     patch("quotation.render_pdf"), patch("builtins.print"), patch("sys.stderr", stderr), \
                     patch("quotation.send_email", side_effect=smtplib.SMTPAuthenticationError(535, response)):
                 with self.assertRaises(SystemExit) as error:

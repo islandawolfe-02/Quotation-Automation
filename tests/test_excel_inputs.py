@@ -17,10 +17,11 @@ class ExcelInputTests(unittest.TestCase):
         self.client = Path(directory.name) / "client.xlsx"
         self.master_fixture = Path(directory.name) / "master_fixture.xlsx"
         self.client_fixture = Path(directory.name) / "client_fixture.xlsx"
-        materials = load_json(ROOT / "data/catalogue.json")
-        charges = load_json(ROOT / "data/charges.json")
+        fixture = load_json(ROOT / "tests/fixtures/quotation.json")
+        materials = fixture["catalogue"]
+        charges = fixture["charges"]
         quantities = {item["code"]: item["quantity"] for kind in ("materials", "charges")
-                      for item in load_json(ROOT / "examples/requirements.json")[kind]}
+                      for item in fixture["request"][kind]}
         rows = []
         for item in materials + charges:
             code = "MCB-16A-C-1P" if item["code"] == "MCB-16A" else item["code"]

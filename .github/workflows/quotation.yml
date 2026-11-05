@@ -15,19 +15,21 @@ on:
         required: true
         default: data/master_catalogue.xlsx
         type: string
-      recipients:
-        description: 'Recipient aliases (addresses are stored in the private configuration file)'
+      send_partner_1:
+        description: 'Send to Partner 1'
         required: true
-        type: choice
-        default: office
-        options:
-          - office
-          - accounts
-          - owner
-          - office,accounts
-          - office,owner
-          - accounts,owner
-          - office,accounts,owner
+        type: boolean
+        default: true
+      send_partner_2:
+        description: 'Send to Partner 2'
+        required: true
+        type: boolean
+        default: false
+      send_partner_3:
+        description: 'Send to Partner 3'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -37,13 +39,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Require at least one receiver
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.send_partner_1 && !inputs.send_partner_2 && !inputs.send_partner_3 }}
+        run: |
+          echo "::error::Select at least one partner to receive the quotation."
+          exit 1
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install PDF dependency
+      - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Check calculations, PDF generation and email handling
         run: python -m unittest discover -s tests -v
@@ -52,7 +59,12 @@ jobs:
         env:
           REQUIREMENTS_FILE: ${{ inputs.requirements_file }}
           CATALOGUE_FILE: ${{ inputs.catalogue_file }}
-          QUOTE_RECIPIENT_ALIASES: ${{ inputs.recipients }}
+          SEND_PARTNER_1: ${{ inputs.send_partner_1 }}
+          SEND_PARTNER_2: ${{ inputs.send_partner_2 }}
+          SEND_PARTNER_3: ${{ inputs.send_partner_3 }}
+          PARTNER_1_EMAIL: ${{ secrets.PARTNER_1_EMAIL }}
+          PARTNER_2_EMAIL: ${{ secrets.PARTNER_2_EMAIL }}
+          PARTNER_3_EMAIL: ${{ secrets.PARTNER_3_EMAIL }}
           SMTP_HOST: ${{ vars.SMTP_HOST }}
           SMTP_PORT: ${{ vars.SMTP_PORT || '587' }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}

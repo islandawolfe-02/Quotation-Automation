@@ -1,8 +1,0 @@
-[
-  {"code": "LAB-LIGHT-POINT", "category": "Labour Charges", "description": "Light point wiring", "specification": "Installation labour only", "unit": "point", "rate": "300.00", "tax_percent": "0"},
-  {"code": "LAB-16A-LINE", "category": "Labour Charges", "description": "16 A line wiring", "specification": "Installation labour only", "unit": "line", "rate": "500.00", "tax_percent": "0"},
-  {"code": "LAB-FIXTURE", "category": "Labour Charges", "description": "Light fixture installation", "specification": "Standard fixture installation", "unit": "piece", "rate": "200.00", "tax_percent": "0"},
-  {"code": "LAB-DB", "category": "Labour Charges", "description": "Distribution board installation", "specification": "Installation and testing", "unit": "board", "rate": "2000.00", "tax_percent": "0"},
-  {"code": "TRANSPORT", "category": "Other Charges", "description": "Local transport", "specification": "One delivery trip", "unit": "trip", "rate": "800.00", "tax_percent": "0"},
-  {"code": "TESTING", "category": "Other Charges", "description": "Final testing and inspection", "specification": "One site visit", "unit": "visit", "rate": "1000.00", "tax_percent": "0"}
-]

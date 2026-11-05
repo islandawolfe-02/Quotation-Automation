@@ -118,17 +118,27 @@ def load_excel_inputs(master_path, client_path):
 
 
 def recipient_addresses():
-    aliases = os.environ.get("QUOTE_RECIPIENT_ALIASES")
-    if aliases is None and os.environ.get("QUOTE_EMAIL_TO"):
-        return os.environ["QUOTE_EMAIL_TO"]
-    registry = load_json(ROOT / "config/recipients.json")
-    selected = [alias.strip() for alias in (aliases if aliases is not None else "office").split(",")]
-    if not isinstance(registry, dict) or not selected or any(not alias or alias not in registry for alias in selected):
-        raise ValueError("Choose at least one configured recipient alias from config/recipients.json")
-    addresses = [text(registry[alias], "Configured recipient address") for alias in dict.fromkeys(selected)]
-    if any(address.lower().endswith(".invalid") for address in addresses):
-        raise ValueError("Replace the selected demo addresses in config/recipients.json before sending")
-    return ",".join(addresses)
+    selected = []
+    for partner in (1, 2, 3):
+        flag = os.environ.get(f"SEND_PARTNER_{partner}", "true" if partner == 1 else "false").strip().lower()
+        if flag not in ("true", "false"):
+            raise ValueError(f"SEND_PARTNER_{partner} must be true or false")
+        if flag == "true":
+            selected.append(f"PARTNER_{partner}_EMAIL")
+    if not selected:
+        raise ValueError("Select at least one partner to receive the quotation")
+    addresses = []
+    for name in selected:
+        if not os.environ.get(name, "").strip():
+            raise ValueError(f"Missing selected recipient secret: {name}")
+        try:
+            address = Address(addr_spec=os.environ[name].strip())
+            if not address.username or not address.domain or address.domain.lower().endswith(".invalid"):
+                raise ValueError
+        except (ValueError, HeaderParseError):
+            raise ValueError(f"{name} must contain exactly one valid email address") from None
+        addresses.append(address)
+    return addresses
 
 
 def load_json(path):
@@ -296,13 +306,7 @@ def send_email(path, quote_id):
     if missing:
         raise ValueError("Missing email settings: " + ", ".join(missing))
     sender = str(Address(addr_spec=text(os.environ["SMTP_FROM"], "SMTP_FROM")))
-    configured_recipients = recipient_addresses()
-    try:
-        recipients = [Address(addr_spec=value.strip()) for value in configured_recipients.split(",")]
-        if any(not address.username or not address.domain for address in recipients):
-            raise ValueError
-    except (ValueError, HeaderParseError):
-        raise ValueError("Recipients must contain valid email addresses separated by commas, with no empty entries.") from None
+    recipients = recipient_addresses()
     message = EmailMessage()
     message["Subject"] = f"Mock electrical quotation {quote_id}"
     message["From"] = sender
@@ -355,12 +359,11 @@ def main():
     parser.add_argument("--send-email", action="store_true")
     args = parser.parse_args()
     try:
-        raw = os.environ.get("QUOTATION_REQUIREMENTS_JSON", "").strip()
-        if not raw and args.requirements.suffix.lower() == ".xlsx":
-            request, catalogue, charges = load_excel_inputs(args.catalogue, args.requirements)
-        else:
-            request = json.loads(raw, parse_float=Decimal) if raw else load_json(args.requirements)
-            catalogue, charges = load_json(ROOT / "data/catalogue.json"), load_json(ROOT / "data/charges.json")
+        if args.send_email:
+            recipient_addresses()
+        if args.requirements.suffix.lower() != ".xlsx" or args.catalogue.suffix.lower() != ".xlsx":
+            raise ValueError("Requirements and master catalogue must be .xlsx workbooks")
+        request, catalogue, charges = load_excel_inputs(args.catalogue, args.requirements)
         result = calculate(request, catalogue, charges)
         output = ROOT / "output/pdf" / f'{request["quotation_id"]}.pdf'
         render_pdf(output, request, result, load_json(ROOT / "templates/quotation.json"))

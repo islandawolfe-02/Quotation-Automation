@@ -2,7 +2,7 @@
 
 Edit the master Excel catalogue and a client requirements workbook, then run
 GitHub Actions to generate and email a mock quotation PDF. Select one, two or
-all three recipient aliases when starting the run. Outlook.com sends through
+all three partners using checkboxes when starting the run. Outlook.com sends through
 Microsoft Graph with OAuth; other senders can use authenticated SMTP with TLS.
 The user confirmed that Graph delivery is working on 2026-11-04.
 
@@ -18,7 +18,6 @@ All business details, rates, tax settings and terms in this POC are fictional.
 | `templates/quotation.json` | Mock business details and quotation terms |
 | `data/master_catalogue.xlsx` | Editable master with 33 material variants and 6 labour/other charge rows |
 | `examples/client_requirements.xlsx` | Client details and requested component quantities |
-| `config/recipients.json` | Private-repo mapping from three aliases to receiving addresses |
 | `quotation.py` | PDF layout, if its visual arrangement needs changing |
 
 ## Edit the Excel workbooks
@@ -96,38 +95,34 @@ into **Secret**, then click **Add secret**. Outlook needs these three secrets:
 | `MICROSOFT_CLIENT_ID` | Application (client) ID from the app registration below |
 | `MICROSOFT_REFRESH_TOKEN` | Token created by the one-time local sign-in below |
 
-### Configure the three receivers
+### Configure partner receiver secrets
 
-Edit `config/recipients.json` in this private repo. Replace the three demo
-addresses with your actual receiving addresses, keeping the alias keys:
+In **Settings → Secrets and variables → Actions → Secrets**, create these
+repository secrets. Each value must be one plain email address:
 
-```json
-{
-  "office": "office@your-domain.com",
-  "accounts": "accounts@your-domain.com",
-  "owner": "owner@your-domain.com"
-}
-```
+| Secret | Value |
+| --- | --- |
+| `PARTNER_1_EMAIL` | Partner 1's receiving email address |
+| `PARTNER_2_EMAIL` | Partner 2's receiving email address |
+| `PARTNER_3_EMAIL` | Partner 3's receiving email address |
 
-The workflow's **recipients** choice offers all seven non-empty combinations:
-`office`, `accounts`, `owner`, `office,accounts`, `office,owner`, `accounts,owner`,
-or `office,accounts,owner`. Only these aliases appear in the run form. The
-selected addresses are delivered using **BCC**, so recipients do not see one
-another's addresses. Invalid or unconfigured selections fail before sending;
-the shipped `.invalid` demo addresses cannot be used for email delivery.
+The run form shows **Send to Partner 1**, **Send to Partner 2** and **Send to
+Partner 3** as checkboxes. Partner 1 starts checked; the other two start
+unchecked. Choose any one, any two, or all three. If all are unchecked, the
+workflow fails with **Select at least one partner** before checkout or dependency
+installation. The local CLI also checks before reading workbooks or generating
+a PDF. GitHub's form cannot express a cross-field checkbox requirement, so this
+is enforced by the workflow and application.
 
-Receiver addresses are no longer a required GitHub secret and the workflow does
-not pass `QUOTE_EMAIL_TO`. For compatibility, local runs can still use that
-environment variable when no alias selection is supplied. Alias selections
-always use the configuration file.
+Only selected partners need populated, valid secrets. Recipients are sent using
+**BCC** so they do not see one another's addresses. Addresses are not workflow
+inputs or configuration files and are not printed by the application. The
+previous recipient file and comma-separated receiver environment option have
+been removed.
 
-This is the practical option for a private repo with trusted collaborators.
-Addresses are not printed in ordinary logs, but collaborators with repo access
-can read the file and its Git history. It is not encrypted. BCC hides addresses
-from other recipients, not from the sender or Microsoft. If repo readers must
-not know the addresses, use encrypted storage with a separately protected key.
-GitHub variables do not add confidentiality because their values are unmasked
-by default: [GitHub variables](https://docs.github.com/en/actions/concepts/workflows-and-actions/variables).
+If addresses were committed in the old recipient file, deleting it on this
+branch does not erase those earlier Git commits. Treat past repository readers
+as having had access to those addresses. No history rewrite is performed here.
 
 If an SMTP server accepts some recipients and rejects others, the job fails
 after partial delivery. Check who received it before retrying.
@@ -137,22 +132,6 @@ mail service. Outlook does not use `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME` or
 `SMTP_PASSWORD`; existing values can remain configured. If either Microsoft
 OAuth secret is present, both are required and Graph is used. Failures do not
 fall back to SMTP or retry the mail submission automatically.
-
-**Already set up the earlier SMTP version?** Keep your existing app registration
-and `MICROSOFT_CLIENT_ID`. Use the updated helper to approve `Mail.Send` and
-replace the `MICROSOFT_REFRESH_TOKEN` secret:
-
-```sh
-rm -f .outlook-refresh-token
-python3 outlook_auth.py --client-id YOUR_APPLICATION_CLIENT_ID
-pbcopy < .outlook-refresh-token
-```
-
-Complete the Microsoft sign-in before the copy command. On GitHub, edit the
-existing `MICROSOFT_REFRESH_TOKEN` secret and paste the replacement token. Delete
-the local token file after saving it in GitHub. Push the updated code and start
-a new manual run on `main`. The old `SMTP.Send` consent does not grant the new
-`Mail.Send` permission. No new application registration is necessary.
 
 Register and authorise the application once:
 
@@ -199,7 +178,7 @@ generally last 90 days for this flow but can be revoked earlier.
 
 For other providers, set `SMTP_HOST` and `SMTP_PORT` to their SMTP settings
 (`587` for STARTTLS or `465` for implicit TLS). Keep `SMTP_USERNAME` and `SMTP_FROM`
-as secrets, add a `SMTP_PASSWORD` secret, configure `config/recipients.json`,
+as secrets, add a `SMTP_PASSWORD` secret and the partner receiver secrets,
 and leave the two `MICROSOFT_*` secrets unset. The sender address must be
 authorised by the provider.
 
@@ -214,42 +193,55 @@ OAuth support here is specifically for personal Outlook.com accounts. Other
 OAuth providers need their own integration. An ordinary account password does
 not necessarily enable SMTP. Get SMTP settings from your provider.
 
-## Run the pipeline
+## Run the pipeline with the master catalogue
 
-1. Save the edited Excel workbooks, commit them and the recipient configuration,
-   and push your branch. The runner reads the committed workbook versions;
-   unsaved or unpushed edits on your computer are not available to GitHub.
-   Pushes and pull requests run tests without sending email.
-2. Open **Actions → Quotation POC → Run workflow**.
-3. Select your branch. Set **requirements_file** to the client workbook path
-   (default `examples/client_requirements.xlsx`) and **catalogue_file** to
-   `data/master_catalogue.xlsx` or another master workbook in that branch.
-4. Choose the **recipients** alias combination and run. The pipeline validates
-   and prices the workbook, generates the PDF, and emails the selected receivers.
-   A PDF download is not required. GitHub's run form accepts file paths, not
-   direct Excel file uploads.
+1. Open **`data/master_catalogue.xlsx`** in Excel. This is the master quote
+   catalogue: update the rates and specifications, retaining one unique Item
+   Code per component variant and Quantity = 1 per pricing unit.
+2. Open **`examples/client_requirements.xlsx`**. Fill client details in B4:B9;
+   set quantities and areas in the component table. A blank or zero quantity
+   omits an item. Copy changed specification rows from the master as needed.
+3. Save both workbooks. Add the partner receiver secrets above and retain your
+   existing working Microsoft Graph sender secrets.
+4. Commit and push this feature branch. GitHub reads the committed files, so
+   unsaved or unpushed Excel edits cannot be used by the runner.
+5. Open **Actions → Quotation POC → Run workflow**, select your branch, and use:
 
-While this change is on the feature branch, the existing default-branch form
-may still show the older input fields. After pushing, GitHub CLI can dispatch
-the updated workflow explicitly on the feature branch:
+   | Field | Value |
+   | --- | --- |
+   | `requirements_file` | `examples/client_requirements.xlsx` |
+   | `catalogue_file` | `data/master_catalogue.xlsx` |
+   | `send_partner_1` | Check to include Partner 1 |
+   | `send_partner_2` | Check to include Partner 2 |
+   | `send_partner_3` | Check to include Partner 3 |
+
+6. Select at least one partner and click **Run workflow**. The selected partners
+   receive the PDF. The master determines rates and tax; the client workbook
+   determines client details, quantities and areas. No PDF download is required.
+
+If the web form still shows older inputs from the default branch, dispatch the
+feature-branch workflow with GitHub CLI after pushing. This example selects
+Partners 1 and 3:
 
 ```sh
 gh workflow run quotation.yml --ref feature/input-details-with-excel-sheets \
   -f requirements_file=examples/client_requirements.xlsx \
   -f catalogue_file=data/master_catalogue.xlsx \
-  -f recipients=office,accounts
+  -f send_partner_1=true \
+  -f send_partner_2=false \
+  -f send_partner_3=true
 ```
 
 Use the actual branch name if it changes. The workflow already exists on the
 default branch; `--ref` selects the branch version to execute.
 [GitHub manual runs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
 
-Recipient aliases resolve through the configuration file; the client workbook
-does not control delivery addresses. A failed email submission fails the job. Successful Graph
-submission (`202 Accepted`) or SMTP submission means the service accepted the
-request; check the inbox and spam folder to confirm delivery. Graph also saves
-a copy in the sending account's Sent Items. There are no automatic send retries.
-Rerunning a manual job can send another copy with the same quotation ID.
+File fields accept repository paths, not direct Excel uploads. Pushes and pull
+requests run tests without sending email. A manual run generates and sends the
+quotation. Successful Graph submission (`202 Accepted`) means Microsoft accepted
+the request; check the inbox and spam folder to confirm delivery. Graph also
+saves a copy in Sent Items. There are no automatic mail retries, and rerunning
+an already successful job can send another copy with the same quotation ID.
 
 ### If Outlook authentication fails
 
@@ -269,7 +261,7 @@ The script reports HTTP status and fixed guidance without logging the Graph
 response body, email addresses, or tokens.
 
 Share the safe error code and fixed explanation when asking for help, not tokens
-or passwords. After pushing a code fix, start a **new Run workflow** on `main`;
+or passwords. After pushing a code fix, start a **new Run workflow** on the updated branch;
 re-running an older failed run uses the code from that older run.
 
 No PDF artifacts or quotation history are uploaded, and generated PDFs are
@@ -298,17 +290,18 @@ Git-ignored. To generate another job locally:
 python quotation.py --requirements path/to/client.xlsx --catalogue data/master_catalogue.xlsx
 ```
 
-For local email, configure the sender environment variables, set
-`QUOTE_RECIPIENT_ALIASES=office,owner`, and run `python quotation.py --send-email`.
-The script does not load `.env` files. With no selection or legacy email
-environment variable, the local default alias is `office`.
+For local email, configure the sender and partner secret environment variables,
+then select partners explicitly. This example selects Partners 1 and 3:
 
-The original `examples/requirements.json`, `data/catalogue.json` and
-`data/charges.json` remain available for the legacy JSON mode:
-`python quotation.py --requirements examples/requirements.json`. That original
-sample totals INR 42,400.00. `QUOTATION_REQUIREMENTS_JSON` also remains supported
-locally. JSON mode uses those JSON catalogues; the workbook workflow uses the
-Excel master and does not expose a JSON job input.
+```sh
+SEND_PARTNER_1=true SEND_PARTNER_2=false SEND_PARTNER_3=true python quotation.py --send-email
+```
+
+The script does not load `.env` files. With no selection flags, local email
+selects Partner 1 and requires `PARTNER_1_EMAIL`. Quote inputs are Excel-only;
+the old JSON catalogue, charges and job files have been removed. Shared mock
+data for automated tests now lives in `tests/fixtures/quotation.json` and is
+not an operator input.
 
 The PDF always says **MOCK QUOTATION - POC ONLY**. Before using it commercially,
 replace the demo prices/details/terms, agree the applicable tax treatment and

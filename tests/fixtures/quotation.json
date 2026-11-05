@@ -1,0 +1,202 @@
+{
+  "request": {
+    "quotation_id": "POC-001",
+    "customer": "Demo Community Centre",
+    "site": "Sample project site, Shillong",
+    "validity_days": 15,
+    "materials": [
+      {
+        "code": "LED-LINEAR-25",
+        "quantity": "8",
+        "area": "Conference Hall"
+      },
+      {
+        "code": "LED-COB-12",
+        "quantity": "6",
+        "area": "Covered Verandah"
+      },
+      {
+        "code": "WALL-LIGHT-7",
+        "quantity": "4",
+        "area": "Lobby"
+      },
+      {
+        "code": "WIRE-1.5-90",
+        "quantity": "3",
+        "area": "General"
+      },
+      {
+        "code": "WIRE-4-90",
+        "quantity": "1",
+        "area": "General"
+      },
+      {
+        "code": "PVC-PIPE-3",
+        "quantity": "20",
+        "area": "General"
+      },
+      {
+        "code": "MCB-16A",
+        "quantity": "4",
+        "area": "General"
+      },
+      {
+        "code": "CONSUMABLES",
+        "quantity": "1",
+        "area": "General"
+      }
+    ],
+    "charges": [
+      {
+        "code": "LAB-LIGHT-POINT",
+        "quantity": "18"
+      },
+      {
+        "code": "LAB-16A-LINE",
+        "quantity": "4"
+      },
+      {
+        "code": "LAB-FIXTURE",
+        "quantity": "18"
+      },
+      {
+        "code": "TRANSPORT",
+        "quantity": "1"
+      },
+      {
+        "code": "TESTING",
+        "quantity": "1"
+      }
+    ]
+  },
+  "catalogue": [
+    {
+      "code": "LED-LINEAR-25",
+      "category": "Light Fixtures",
+      "description": "Demo linear LED fixture",
+      "specification": "25 W, 4000 K, black",
+      "unit": "piece",
+      "rate": "1200.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "LED-COB-12",
+      "category": "Light Fixtures",
+      "description": "Demo surface COB fixture",
+      "specification": "12 W, 3000 K",
+      "unit": "piece",
+      "rate": "850.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "WALL-LIGHT-7",
+      "category": "Light Fixtures",
+      "description": "Demo wall light",
+      "specification": "7 W, 3000 K",
+      "unit": "piece",
+      "rate": "650.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "WIRE-1.5-90",
+      "category": "Wires and Consumables",
+      "description": "Demo copper wire",
+      "specification": "1.5 sq mm, 90 metre coil",
+      "unit": "coil",
+      "rate": "1800.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "WIRE-4-90",
+      "category": "Wires and Consumables",
+      "description": "Demo copper wire",
+      "specification": "4 sq mm, 90 metre coil",
+      "unit": "coil",
+      "rate": "4200.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "PVC-PIPE-3",
+      "category": "Wires and Consumables",
+      "description": "Demo PVC conduit",
+      "specification": "25 mm diameter, 3 metre length",
+      "unit": "length",
+      "rate": "60.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "MCB-16A",
+      "category": "Wires and Consumables",
+      "description": "Demo MCB",
+      "specification": "16 A, single pole",
+      "unit": "piece",
+      "rate": "250.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "CONSUMABLES",
+      "category": "Wires and Consumables",
+      "description": "Demo installation consumables",
+      "specification": "Tape, clips and fasteners",
+      "unit": "lot",
+      "rate": "500.00",
+      "tax_percent": "0"
+    }
+  ],
+  "charges": [
+    {
+      "code": "LAB-LIGHT-POINT",
+      "category": "Labour Charges",
+      "description": "Light point wiring",
+      "specification": "Installation labour only",
+      "unit": "point",
+      "rate": "300.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "LAB-16A-LINE",
+      "category": "Labour Charges",
+      "description": "16 A line wiring",
+      "specification": "Installation labour only",
+      "unit": "line",
+      "rate": "500.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "LAB-FIXTURE",
+      "category": "Labour Charges",
+      "description": "Light fixture installation",
+      "specification": "Standard fixture installation",
+      "unit": "piece",
+      "rate": "200.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "LAB-DB",
+      "category": "Labour Charges",
+      "description": "Distribution board installation",
+      "specification": "Installation and testing",
+      "unit": "board",
+      "rate": "2000.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "TRANSPORT",
+      "category": "Other Charges",
+      "description": "Local transport",
+      "specification": "One delivery trip",
+      "unit": "trip",
+      "rate": "800.00",
+      "tax_percent": "0"
+    },
+    {
+      "code": "TESTING",
+      "category": "Other Charges",
+      "description": "Final testing and inspection",
+      "specification": "One site visit",
+      "unit": "visit",
+      "rate": "1000.00",
+      "tax_percent": "0"
+    }
+  ]
+}

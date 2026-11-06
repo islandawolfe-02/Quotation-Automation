@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import parse_qs
 
-from outlook_auth import AUTHORITY, SCOPE, authorise, post_form, refresh_access_token
+from outlook_auth import AUTHORITY, FILES_SCOPE, SCOPE, authorise, post_form, refresh_access_token
 
 CLIENT_ID = "12345678-1234-1234-1234-123456789012"
 DEVICE = {"device_code": "private-device-code", "user_code": "DEMO-CODE",
@@ -40,6 +40,16 @@ class OutlookAuthTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Run outlook_auth.py again") as error:
                 refresh_access_token(CLIENT_ID, "mock-refresh")
             self.assertNotIn("private-provider-details", str(error.exception))
+
+    def test_onedrive_permission_is_requested_only_when_selected(self):
+        self.assertEqual(FILES_SCOPE, "https://graph.microsoft.com/Files.Read")
+        with patch("outlook_auth.post_form", return_value={"access_token": "mock-access"}) as post:
+            self.assertEqual(refresh_access_token(CLIENT_ID, "refresh", read_files=True), "mock-access")
+            self.assertEqual(post.call_args.args[1]["scope"], f"{SCOPE} {FILES_SCOPE}")
+        with tempfile.TemporaryDirectory() as directory, patch("outlook_auth.time.sleep"), patch("builtins.print"), \
+                patch("outlook_auth.post_form", side_effect=[DEVICE, {"refresh_token": "refresh"}]) as post:
+            authorise(CLIENT_ID, Path(directory) / "token", read_files=True)
+            self.assertEqual(post.call_args_list[0].args[1]["scope"], f"{SCOPE} {FILES_SCOPE}")
 
     def test_device_flow_pending_slowdown_and_private_token_file(self):
         responses = [DEVICE, {"error": "authorization_pending"}, {"error": "slow_down"},

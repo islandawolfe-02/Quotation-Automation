@@ -1,12 +1,16 @@
+import io
+import json
+import os
 import shutil
 import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 
-from quotation import EXCEL_COLUMNS, ROOT, calculate, load_excel_inputs, load_json
+from quotation import EXCEL_COLUMNS, ROOT, calculate, load_excel_inputs, load_json, main
 
 
 class ExcelInputTests(unittest.TestCase):
@@ -94,6 +98,29 @@ class ExcelInputTests(unittest.TestCase):
         self.edit(self.client, "Requirements", "G13", 999999)
         self.edit(self.client, "Requirements", "H13", 99)
         self.assertEqual(self.total(), Decimal("51740.00"))
+
+    def test_onedrive_cli_uses_saved_client_and_latest_master_rates(self):
+        for iteration, total in enumerate(("50940.00", "51740.00")):
+            if iteration:
+                self.edit(self.master, "Catalogue", "G6", 1300)
+            self.edit(self.client, "Requirements", "B4", f"Saved client {iteration}")
+            metadata = json.dumps({"@microsoft.graph.downloadUrl": "https://files.1drv.com/download"}).encode()
+            responses = [io.BytesIO(metadata), io.BytesIO(self.master.read_bytes()),
+                         io.BytesIO(metadata), io.BytesIO(self.client.read_bytes())]
+            with self.subTest(iteration=iteration), \
+                    patch.dict(os.environ, {"MICROSOFT_CLIENT_ID": "client", "MICROSOFT_REFRESH_TOKEN": "refresh"}, clear=True), \
+                    patch("sys.argv", ["quotation.py", "--onedrive", "--send-email",
+                                       "--requirements", "Quotations/saved-client.xlsx",
+                                       "--catalogue", "Quotations/master.xlsx"]), \
+                    patch("quotation.recipient_addresses"), patch("quotation.refresh_access_token", return_value="access"), \
+                    patch("quotation.urlopen", side_effect=responses) as open_url, \
+                    patch("quotation.render_pdf") as render, patch("quotation.send_email") as send, patch("builtins.print"):
+                main()
+                self.assertEqual(render.call_args.args[1]["customer"], f"Saved client {iteration}")
+                self.assertEqual(render.call_args.args[2]["total"], Decimal(total))
+                self.assertIn("Quotations/master.xlsx", open_url.call_args_list[0].args[0].full_url)
+                self.assertIn("Quotations/saved-client.xlsx", open_url.call_args_list[2].args[0].full_url)
+                send.assert_called_once_with(ROOT / "output/pdf/POC-EXCEL-001.pdf", "POC-EXCEL-001")
 
     def test_blank_and_zero_quantities_are_omitted(self):
         self.edit(self.client, "Requirements", "C13", None)

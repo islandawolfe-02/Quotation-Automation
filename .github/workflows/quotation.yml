@@ -6,14 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       requirements_file:
-        description: 'Client workbook path in this branch'
+        description: 'Client workbook path in OneDrive (not a sharing link)'
         required: true
-        default: examples/client_requirements.xlsx
+        default: Quotations/client_requirements.xlsx
         type: string
       catalogue_file:
-        description: 'Master catalogue workbook path in this branch'
+        description: 'Master catalogue workbook path in OneDrive (not a sharing link)'
         required: true
-        default: data/master_catalogue.xlsx
+        default: Quotations/master_catalogue.xlsx
         type: string
       send_partner_1:
         description: 'Send to Partner 1'
@@ -72,7 +72,7 @@ jobs:
           MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
           MICROSOFT_REFRESH_TOKEN: ${{ secrets.MICROSOFT_REFRESH_TOKEN }}
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
-        run: python quotation.py --requirements "$REQUIREMENTS_FILE" --catalogue "$CATALOGUE_FILE" --send-email
+        run: python quotation.py --onedrive --requirements "$REQUIREMENTS_FILE" --catalogue "$CATALOGUE_FILE" --send-email
       - name: Remove generated PDFs
         if: always()
         run: rm -rf output/pdf

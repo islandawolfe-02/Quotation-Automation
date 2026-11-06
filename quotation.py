@@ -7,14 +7,17 @@ import os
 import re
 import smtplib
 import ssl
+from contextlib import ExitStack
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.errors import HeaderParseError
 from email.headerregistry import Address
 from email.message import EmailMessage
 from email.policy import SMTP as SMTP_POLICY
+from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
+from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 from xml.sax.saxutils import escape
 from zipfile import BadZipFile
@@ -34,6 +37,43 @@ ROOT = Path(__file__).resolve().parent
 CENT = Decimal("0.01")
 GROUPS = ("Light Fixtures", "Wires and Consumables", "Labour Charges", "Other Charges")
 EXCEL_COLUMNS = ("Item Code", "Item Name", "Quantity", "Specs", "Poles", "Unit", "Rate INR", "Tax %", "Category", "Brand", "Area")
+MAX_WORKBOOK_BYTES = 10 * 1024 * 1024
+
+
+def download_onedrive_workbook(path, token):
+    path = text(path, "OneDrive workbook path")
+    if (not path.lower().endswith(".xlsx") or any(part in ("", ".", "..") for part in path.split("/"))
+            or any(character in path for character in '\\:*<>?|' + '\r\n')):
+        raise ValueError("Use a OneDrive-relative .xlsx path, for example Quotations/client_requirements.xlsx")
+    request = Request(f"https://graph.microsoft.com/v1.0/me/drive/root:/{quote(path, safe='/')}"
+                      "?$select=id,@microsoft.graph.downloadUrl", headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            metadata = json.loads(response.read(64 * 1024))
+        download_url = metadata.get("@microsoft.graph.downloadUrl", "") if isinstance(metadata, dict) else ""
+        if not isinstance(download_url, str):
+            raise ValueError("OneDrive did not provide a secure workbook download URL")
+        parsed = urlsplit(download_url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("OneDrive did not provide a secure workbook download URL")
+        # Download URLs are preauthenticated; never forward the Graph bearer token.
+        with urlopen(download_url, timeout=30) as response:
+            content = response.read(MAX_WORKBOOK_BYTES + 1)
+        if not content or len(content) > MAX_WORKBOOK_BYTES:
+            raise ValueError("OneDrive workbook must be non-empty and at most 10 MiB")
+        return BytesIO(content)
+    except HTTPError as exc:
+        with exc:
+            status = exc.code
+        if status in (401, 403):
+            reason = "Run outlook_auth.py with --read-files and update MICROSOFT_REFRESH_TOKEN."
+        elif status == 404:
+            reason = "Check the workbook path and that it has finished syncing to the authorised account's OneDrive."
+        elif status == 429:
+            reason = "Microsoft rate-limited the request. Wait before starting a new run."
+        else:
+            reason = "Could not download the saved workbook. Try a new run after checking OneDrive."
+        raise ValueError(f"OneDrive workbook download failed (HTTP {status}). {reason}") from None
 
 
 def excel_value(cell):
@@ -310,7 +350,7 @@ def send_email(path, quote_id):
     message = EmailMessage()
     message["Subject"] = f"Mock electrical quotation {quote_id}"
     message["From"] = sender
-    message["Bcc"] = recipients
+    message["To"] = recipients
     message.set_content("Attached is your mock electrical quotation. All prices and tax settings are illustrative.\n")
     message.add_attachment(path.read_bytes(), maintype="application", subtype="pdf", filename=path.name)
     if oauth:
@@ -354,16 +394,28 @@ def send_email(path, quote_id):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--requirements", type=Path, default=ROOT / "examples/client_requirements.xlsx")
-    parser.add_argument("--catalogue", type=Path, default=ROOT / "data/master_catalogue.xlsx")
+    parser.add_argument("--requirements", help="Client .xlsx path; relative to OneDrive root with --onedrive")
+    parser.add_argument("--catalogue", help="Master .xlsx path; relative to OneDrive root with --onedrive")
+    parser.add_argument("--onedrive", action="store_true", help="Read the latest saved Excel workbooks from OneDrive")
     parser.add_argument("--send-email", action="store_true")
     args = parser.parse_args()
     try:
         if args.send_email:
             recipient_addresses()
-        if args.requirements.suffix.lower() != ".xlsx" or args.catalogue.suffix.lower() != ".xlsx":
+        requirements = args.requirements or ("Quotations/client_requirements.xlsx" if args.onedrive else ROOT / "examples/client_requirements.xlsx")
+        catalogue = args.catalogue or ("Quotations/master_catalogue.xlsx" if args.onedrive else ROOT / "data/master_catalogue.xlsx")
+        if Path(requirements).suffix.lower() != ".xlsx" or Path(catalogue).suffix.lower() != ".xlsx":
             raise ValueError("Requirements and master catalogue must be .xlsx workbooks")
-        request, catalogue, charges = load_excel_inputs(args.catalogue, args.requirements)
+        with ExitStack() as inputs:
+            if args.onedrive:
+                token = refresh_access_token(text(os.environ.get("MICROSOFT_CLIENT_ID"), "MICROSOFT_CLIENT_ID"),
+                                             text(os.environ.get("MICROSOFT_REFRESH_TOKEN"), "MICROSOFT_REFRESH_TOKEN"),
+                                             read_files=True)
+                catalogue = inputs.enter_context(download_onedrive_workbook(str(catalogue), token))
+                requirements = inputs.enter_context(download_onedrive_workbook(str(requirements), token))
+            else:
+                catalogue, requirements = Path(catalogue), Path(requirements)
+            request, catalogue, charges = load_excel_inputs(catalogue, requirements)
         result = calculate(request, catalogue, charges)
         output = ROOT / "output/pdf" / f'{request["quotation_id"]}.pdf'
         render_pdf(output, request, result, load_json(ROOT / "templates/quotation.json"))

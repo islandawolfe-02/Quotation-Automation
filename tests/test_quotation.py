@@ -125,8 +125,8 @@ class QuotationTests(unittest.TestCase):
                     else:
                         smtp.starttls.assert_not_called()
                     message = smtp.send_message.call_args.args[0]
-                    self.assertEqual(message["Bcc"], "owner@another.invalid")
-                    self.assertIsNone(message["To"])
+                    self.assertEqual(message["To"], "owner@another.invalid")
+                    self.assertIsNone(message["Bcc"])
                     self.assertEqual(message["From"], "sender@example.invalid")
                     attachment = next(message.iter_attachments())
                     self.assertEqual(attachment.get_content_type(), "application/pdf")
@@ -159,13 +159,15 @@ class QuotationTests(unittest.TestCase):
                 smtp.send_message.return_value = {}
                 send_email(path, "POC-001")
                 message = smtp.send_message.call_args.args[0]
-                self.assertEqual([address.addr_spec for address in message["Bcc"].addresses], expected)
+                self.assertEqual([address.addr_spec for address in message["To"].addresses], expected)
                 transport = SMTPClient()
                 transport.ehlo_or_helo_if_needed = Mock()
                 transport.sendmail = Mock(return_value={})
                 transport.send_message(message)
                 self.assertEqual(transport.sendmail.call_args.args[1], expected)
                 self.assertNotIn(b"Bcc:", transport.sendmail.call_args.args[2])
+                delivered = message_from_bytes(transport.sendmail.call_args.args[2], policy=default)
+                self.assertEqual([address.addr_spec for address in delivered["To"].addresses], expected)
                 smtp.send_message.return_value = {expected[1]: (550, b"Rejected")}
                 with self.assertRaises(smtplib.SMTPException):
                     send_email(path, "POC-001")
@@ -175,8 +177,8 @@ class QuotationTests(unittest.TestCase):
                 open_url.return_value.__enter__.return_value.status = 202
                 send_email(path, "POC-001")
                 message = message_from_bytes(base64.b64decode(open_url.call_args.args[0].data), policy=default)
-                self.assertEqual([address.addr_spec for address in message["Bcc"].addresses], expected)
-                self.assertIsNone(message["To"])
+                self.assertEqual([address.addr_spec for address in message["To"].addresses], expected)
+                self.assertIsNone(message["Bcc"])
                 self.assertEqual(next(message.iter_attachments()).get_payload(decode=True), b"%PDF-mock")
 
     def test_invalid_partner_email_fails_before_authentication_or_sending(self):
@@ -221,8 +223,8 @@ class QuotationTests(unittest.TestCase):
                 message = message_from_bytes(base64.b64decode(request.data, validate=True), policy=default)
                 self.assertEqual(message["Subject"], "Mock electrical quotation POC-001")
                 self.assertEqual(message["From"], "sender@outlook.com")
-                self.assertEqual(message["Bcc"], "owner@another.invalid")
-                self.assertIsNone(message["To"])
+                self.assertEqual(message["To"], "owner@another.invalid")
+                self.assertIsNone(message["Bcc"])
                 attachment = next(message.iter_attachments())
                 self.assertEqual(attachment.get_filename(), "quote.pdf")
                 self.assertEqual(attachment.get_content_type(), "application/pdf")

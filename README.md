@@ -1,7 +1,8 @@
 # Electrical Quotation Automation POC
 
-Edit the master Excel catalogue and a client requirements workbook, then run
-GitHub Actions to generate and email a mock quotation PDF. Select one, two or
+Save the master Excel catalogue and a client requirements workbook to OneDrive,
+then run GitHub Actions to generate and email a mock quotation PDF. After one-time
+setup, Excel changes do not need a Git commit or push. Select one, two or
 all three partners using checkboxes when starting the run. Outlook.com sends through
 Microsoft Graph with OAuth; other senders can use authenticated SMTP with TLS.
 The user confirmed that Graph delivery is working on 2026-11-04.
@@ -16,8 +17,8 @@ All business details, rates, tax settings and terms in this POC are fictional.
 | File | What to edit |
 | --- | --- |
 | `templates/quotation.json` | Mock business details and quotation terms |
-| `data/master_catalogue.xlsx` | Editable master with 33 material variants and 6 labour/other charge rows |
-| `examples/client_requirements.xlsx` | Client details and requested component quantities |
+| `data/master_catalogue.xlsx` | Starter master to copy to OneDrive; 33 material variants and 6 labour/other charge rows |
+| `examples/client_requirements.xlsx` | Starter client workbook to copy to OneDrive |
 | `quotation.py` | PDF layout, if its visual arrangement needs changing |
 
 ## Edit the Excel workbooks
@@ -114,9 +115,9 @@ installation. The local CLI also checks before reading workbooks or generating
 a PDF. GitHub's form cannot express a cross-field checkbox requirement, so this
 is enforced by the workflow and application.
 
-Only selected partners need populated, valid secrets. Recipients are sent using
-**BCC** so they do not see one another's addresses. Addresses are not workflow
-inputs or configuration files and are not printed by the application. The
+Only selected partners need populated, valid secrets. All selected recipients
+appear in **To** and can see who else received the email. The sender stays in
+**From**. Addresses are not workflow inputs or configuration files and are not printed by the application. The
 previous recipient file and comma-separated receiver environment option have
 been removed.
 
@@ -146,17 +147,18 @@ Register and authorise the application once:
 3. In the app's **Authentication** settings, set **Allow public client flows**
    to **Yes** and save. No client secret or redirect URI is needed for this
    device-code flow. The helper requests delegated `Mail.Send` and
-   `offline_access` permissions when you sign in; do not choose application
-   permissions or the client-credentials flow.
+   `offline_access` permissions, plus `Files.Read` when `--read-files` is
+   supplied; do not choose application permissions or the client-credentials flow.
 4. From this repository on your own computer, run:
 
    ```sh
-   python3 outlook_auth.py --client-id YOUR_APPLICATION_CLIENT_ID
+   python3 outlook_auth.py --client-id YOUR_APPLICATION_CLIENT_ID --read-files
    ```
 
 5. Open the Microsoft verification page shown by the helper, enter its code,
    and sign in as **dlg-electrical-solutions@outlook.com**. Approve permission
-   to send mail. Only authorise a device code you just requested yourself.
+   to send mail and read OneDrive files. Only authorise a device code you just
+   requested yourself.
    This helper signs in only; it does not send email.
 6. The helper creates `.outlook-refresh-token` locally with private file
    permissions. Copy its contents into the `MICROSOFT_REFRESH_TOKEN` repository
@@ -193,55 +195,116 @@ OAuth support here is specifically for personal Outlook.com accounts. Other
 OAuth providers need their own integration. An ordinary account password does
 not necessarily enable SMTP. Get SMTP settings from your provider.
 
-## Run the pipeline with the master catalogue
+## Set up OneDrive once
 
-1. Open **`data/master_catalogue.xlsx`** in Excel. This is the master quote
-   catalogue: update the rates and specifications, retaining one unique Item
-   Code per component variant and Quantity = 1 per pricing unit.
-2. Open **`examples/client_requirements.xlsx`**. Fill client details in B4:B9;
-   set quantities and areas in the component table. A blank or zero quantity
-   omits an item. Copy changed specification rows from the master as needed.
-3. Save both workbooks. Add the partner receiver secrets above and retain your
-   existing working Microsoft Graph sender secrets.
-4. Commit and push this feature branch. GitHub reads the committed files, so
-   unsaved or unpushed Excel edits cannot be used by the runner.
-5. Open **Actions → Quotation POC → Run workflow**, select your branch, and use:
+The workflow reads private files from the OneDrive belonging to the same account
+used for Microsoft Graph: **dlg-electrical-solutions@outlook.com**. No public
+sharing links or additional service credentials are needed. The starter Excel
+files in this repository remain available for copying and local use.
+
+1. Open [OneDrive](https://onedrive.live.com/) using that account. Create a folder
+   called **Quotations** at the top level of **My files**.
+2. Upload `data/master_catalogue.xlsx` and `examples/client_requirements.xlsx`
+   into that folder. Their OneDrive paths will be:
+
+   ```text
+   Quotations/master_catalogue.xlsx
+   Quotations/client_requirements.xlsx
+   ```
+
+3. Grant read access using the existing app registration. From this repository,
+   run the updated helper (remove an old local `.outlook-refresh-token` first
+   if it still exists):
+
+   ```sh
+   python3 outlook_auth.py --client-id YOUR_APPLICATION_CLIENT_ID --read-files
+   ```
+
+   Sign in as the sender and approve sending mail and reading files. Replace
+   `MICROSOFT_REFRESH_TOKEN` in GitHub Secrets with the newly saved token, then
+   delete the local token file. Keep `MICROSOFT_CLIENT_ID`, `SMTP_FROM` and the
+   three partner secrets. See the sign-in instructions above for copying the
+   token without printing it. **An old mail-only consent is insufficient for
+   OneDrive reads.** Omitting `--read-files` keeps mail-only authorisation for
+   local-file use.
+4. Commit and push these **code/workflow changes once**. Ordinary Excel changes
+   afterward happen in OneDrive and require no commits. To use the updated web
+   run form reliably, the updated workflow must also be on the default branch;
+   the CLI below can select this feature branch in the meantime.
+
+The app requests delegated **Files.Read**, the least-privileged download
+permission for a personal Microsoft account. This permits reading that account's
+files, not only the Quotations folder, so use the business account for these
+inputs. It does not grant file write or delete permission.
+[Microsoft download permissions](https://learn.microsoft.com/en-us/graph/api/driveitem-get-content?view=graph-rest-1.0),
+[Files.Read permission](https://learn.microsoft.com/en-us/graph/permissions-reference#filesread).
+
+## Save Excel, then run the pipeline
+
+1. Open the **OneDrive copy** of `master_catalogue.xlsx` in Excel online or from
+   your synced OneDrive folder. Update rates and specs as needed, keeping a
+   unique Item Code per variant and master Quantity = 1.
+2. Open the **OneDrive copy** of `client_requirements.xlsx`. Fill client details
+   in B4:B9 and set quantities and areas. Copy updated component rows from the
+   master when their specifications change. Use a fresh Quotation ID per job.
+3. **Save and wait for both files to finish syncing to OneDrive.** Check them
+   in OneDrive online if unsure. Saving only the repository copies on your Mac
+   does not update these cloud files. Avoid editing either workbook during a run.
+4. Open **GitHub → Actions → Quotation POC → Run workflow**, select the branch
+   containing the updated code, and use:
 
    | Field | Value |
    | --- | --- |
-   | `requirements_file` | `examples/client_requirements.xlsx` |
-   | `catalogue_file` | `data/master_catalogue.xlsx` |
+   | `requirements_file` | `Quotations/client_requirements.xlsx` |
+   | `catalogue_file` | `Quotations/master_catalogue.xlsx` |
    | `send_partner_1` | Check to include Partner 1 |
    | `send_partner_2` | Check to include Partner 2 |
    | `send_partner_3` | Check to include Partner 3 |
 
-6. Select at least one partner and click **Run workflow**. The selected partners
-   receive the PDF. The master determines rates and tax; the client workbook
-   determines client details, quantities and areas. No PDF download is required.
+5. Select at least one partner and click **Run workflow**. The workflow downloads
+   the current saved workbooks, validates them, generates the PDF, and emails
+   it to the selected partners in **To**. It never falls back to the repository
+   samples if OneDrive fails. No commit, push or PDF download is needed per job.
 
-If the web form still shows older inputs from the default branch, dispatch the
-feature-branch workflow with GitHub CLI after pushing. This example selects
-Partners 1 and 3:
+You can save client workbooks under different filenames and enter the desired
+OneDrive-relative path, such as `Quotations/Jobs/job-002.xlsx`. File fields
+accept paths within this account's OneDrive, **not sharing URLs, Mac paths or
+file uploads**. Paths and filenames appear in workflow metadata, so avoid
+putting client names or other confidential details in them.
+
+If the web form still shows older inputs from the default branch, use GitHub
+CLI after the one-time code push. This example selects Partners 1 and 3:
 
 ```sh
 gh workflow run quotation.yml --ref feature/input-details-with-excel-sheets \
-  -f requirements_file=examples/client_requirements.xlsx \
-  -f catalogue_file=data/master_catalogue.xlsx \
+  -f requirements_file=Quotations/client_requirements.xlsx \
+  -f catalogue_file=Quotations/master_catalogue.xlsx \
   -f send_partner_1=true \
   -f send_partner_2=false \
   -f send_partner_3=true
 ```
 
-Use the actual branch name if it changes. The workflow already exists on the
-default branch; `--ref` selects the branch version to execute.
+Use the actual branch name if it changes. The workflow must exist on the default
+branch for manual dispatch; `--ref` selects the branch version to execute.
 [GitHub manual runs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
 
-File fields accept repository paths, not direct Excel uploads. Pushes and pull
-requests run tests without sending email. A manual run generates and sends the
-quotation. Successful Graph submission (`202 Accepted`) means Microsoft accepted
-the request; check the inbox and spam folder to confirm delivery. Graph also
-saves a copy in Sent Items. There are no automatic mail retries, and rerunning
-an already successful job can send another copy with the same quotation ID.
+Pushes and pull requests run tests without reading OneDrive or sending email.
+Only manual runs read the cloud workbooks and send the quotation. A successful
+Graph submission (`202 Accepted`) means Microsoft accepted the request; check
+the inbox and spam folder to confirm delivery. Graph also saves a copy in Sent
+Items. There are no automatic mail retries; starting another run reads the latest
+saved files and can send another quotation even with the same Quotation ID.
+
+### If OneDrive downloads fail
+
+- **Microsoft authorisation failed**, **HTTP 401** or **403**: run the helper
+  with `--read-files`, approve file access and replace the refresh token secret.
+- **HTTP 404**: check the path relative to **My files**, filename, sign-in
+  account and completed sync. Open OneDrive online once if it has not been set up.
+- **HTTP 429**: wait before starting another run.
+- A workbook must be a non-empty `.xlsx` file no larger than **10 MiB**. It must
+  retain the supplied sheet layout and plain-value cells. Invalid inputs stop
+  the run before generating or sending a quotation.
 
 ### If Outlook authentication fails
 
@@ -266,10 +329,11 @@ re-running an older failed run uses the code from that older run.
 
 No PDF artifacts or quotation history are uploaded, and generated PDFs are
 removed at the end of the job. The emailed copy is your record. GitHub still
-retains workflow logs/metadata. Committed client workbooks, including names,
-addresses and contacts, remain in private Git history and are readable by repo
-collaborators. Use mock client information while evaluating this POC; it does
-not offer zero-retention input handling.
+retains workflow logs/metadata. Downloaded Excel copies stay in runner memory
+and are not uploaded as artifacts; the source workbooks remain in OneDrive
+under its own retention/version-history settings. Previously committed client
+data remains in Git history. Use mock client information while evaluating
+this POC; this is not a zero-retention system.
 
 ## Run locally
 
@@ -289,6 +353,17 @@ Git-ignored. To generate another job locally:
 ```sh
 python quotation.py --requirements path/to/client.xlsx --catalogue data/master_catalogue.xlsx
 ```
+
+To use the same cloud workbooks locally, configure `MICROSOFT_CLIENT_ID` and
+`MICROSOFT_REFRESH_TOKEN` (with file-read consent), then run:
+
+```sh
+python quotation.py --onedrive
+```
+
+This generates the PDF without sending email. Add `--requirements` and
+`--catalogue` to select other OneDrive-relative paths. Add `--send-email` only
+when you want delivery.
 
 For local email, configure the sender and partner secret environment variables,
 then select partners explicitly. This example selects Partners 1 and 3:

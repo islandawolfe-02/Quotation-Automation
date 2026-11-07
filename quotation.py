@@ -18,7 +18,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from xml.sax.saxutils import escape
 from zipfile import BadZipFile
 from zoneinfo import ZoneInfo
@@ -40,24 +40,32 @@ EXCEL_COLUMNS = ("Item Code", "Item Name", "Quantity", "Specs", "Poles", "Unit",
 MAX_WORKBOOK_BYTES = 10 * 1024 * 1024
 
 
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def download_onedrive_workbook(path, token):
     path = text(path, "OneDrive workbook path")
     if (not path.lower().endswith(".xlsx") or any(part in ("", ".", "..") for part in path.split("/"))
             or any(character in path for character in '\\:*<>?|' + '\r\n')):
         raise ValueError("Use a OneDrive-relative .xlsx path, for example Quotations/client_requirements.xlsx")
-    request = Request(f"https://graph.microsoft.com/v1.0/me/drive/root:/{quote(path, safe='/')}"
-                      "?$select=id,@microsoft.graph.downloadUrl", headers={"Authorization": f"Bearer {token}"})
+    request = Request(f"https://graph.microsoft.com/v1.0/me/drive/root:/{quote(path, safe='/')}:/content",
+                      headers={"Authorization": f"Bearer {token}"})
     try:
-        with urlopen(request, timeout=30) as response:
-            metadata = json.loads(response.read(64 * 1024))
-        download_url = metadata.get("@microsoft.graph.downloadUrl", "") if isinstance(metadata, dict) else ""
-        if not isinstance(download_url, str):
-            raise ValueError("OneDrive did not provide a secure workbook download URL")
-        parsed = urlsplit(download_url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-            raise ValueError("OneDrive did not provide a secure workbook download URL")
-        # Download URLs are preauthenticated; never forward the Graph bearer token.
-        with urlopen(download_url, timeout=30) as response:
+        try:
+            response = build_opener(NoRedirect()).open(request, timeout=30)
+        except HTTPError as redirect:
+            if redirect.code != 302:
+                raise
+            with redirect:
+                download_url = redirect.headers.get("Location", "")
+            parsed = urlsplit(download_url)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError("OneDrive did not provide a secure workbook download URL") from None
+            # Download URLs are preauthenticated; never forward the Graph bearer token.
+            response = urlopen(download_url, timeout=30)
+        with response:
             content = response.read(MAX_WORKBOOK_BYTES + 1)
         if not content or len(content) > MAX_WORKBOOK_BYTES:
             raise ValueError("OneDrive workbook must be non-empty and at most 10 MiB")

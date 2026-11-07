@@ -302,6 +302,13 @@ saved files and can send another quotation even with the same Quotation ID.
 - **HTTP 404**: check the path relative to **My files**, filename, sign-in
   account and completed sync. Open OneDrive online once if it has not been set up.
 - **HTTP 429**: wait before starting another run.
+- **OneDrive did not provide a secure workbook download URL**: check that each
+  path points to a saved Excel file, not a folder or shortcut. The updated
+  downloader uses Microsoft's `/content` endpoint and follows its HTTPS
+  redirect without forwarding the Graph token; it no longer requires the
+  download-URL field in file metadata. Push the fix and start a new workflow
+  run on that branch, rather than rerunning a job using older code.
+  [Microsoft file downloads](https://learn.microsoft.com/en-us/graph/api/driveitem-get-content?view=graph-rest-1.0).
 - A workbook must be a non-empty `.xlsx` file no larger than **10 MiB**. It must
   retain the supplied sheet layout and plain-value cells. Invalid inputs stop
   the run before generating or sending a quotation.

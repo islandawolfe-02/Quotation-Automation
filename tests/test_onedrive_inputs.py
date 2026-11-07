@@ -1,66 +1,108 @@
 import io
-import json
 import os
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
+from urllib.request import HTTPSHandler, build_opener
+from urllib.response import addinfourl
 
-from quotation import download_onedrive_workbook, main
+from quotation import NoRedirect, download_onedrive_workbook, main
 
 
 class OneDriveInputTests(unittest.TestCase):
-    def metadata(self, url="https://files.1drv.com/private-download"):
-        return io.BytesIO(json.dumps({"@microsoft.graph.downloadUrl": url}).encode())
+    def redirect(self, url="https://files.1drv.com/private-download"):
+        return HTTPError("https://graph.microsoft.com/content", 302, "Found",
+                         {"Location": url}, io.BytesIO(b""))
 
     def test_encoded_path_and_download_without_bearer_token(self):
-        with patch("quotation.urlopen", side_effect=[self.metadata(), io.BytesIO(b"workbook")]) as open_url:
+        with patch("quotation.build_opener") as build, \
+                patch("quotation.urlopen", return_value=io.BytesIO(b"workbook")) as open_url:
+            build.return_value.open.side_effect = self.redirect()
             with download_onedrive_workbook("Quotations/Client #1 & café.xlsx", "private-access") as workbook:
                 self.assertEqual(workbook.read(), b"workbook")
-            request = open_url.call_args_list[0].args[0]
+            request = build.return_value.open.call_args.args[0]
             self.assertEqual(request.full_url, "https://graph.microsoft.com/v1.0/me/drive/root:/"
-                             "Quotations/Client%20%231%20%26%20caf%C3%A9.xlsx?$select=id,@microsoft.graph.downloadUrl")
+                             "Quotations/Client%20%231%20%26%20caf%C3%A9.xlsx:/content")
             self.assertEqual(request.get_header("Authorization"), "Bearer private-access")
-            self.assertEqual(open_url.call_args_list[1].args, ("https://files.1drv.com/private-download",))
-            self.assertEqual(open_url.call_args_list[1].kwargs, {"timeout": 30})
+            self.assertIsInstance(build.call_args.args[0], NoRedirect)
+            open_url.assert_called_once_with("https://files.1drv.com/private-download", timeout=30)
+
+    def test_content_can_be_returned_directly_without_metadata(self):
+        with patch("quotation.build_opener") as build, patch("quotation.urlopen") as open_url:
+            build.return_value.open.return_value = io.BytesIO(b"workbook")
+            with download_onedrive_workbook("Quotations/client.xlsx", "access") as workbook:
+                self.assertEqual(workbook.read(), b"workbook")
+            open_url.assert_not_called()
+
+    def test_standard_library_redirect_handler_does_not_forward_authorisation(self):
+        requests = []
+
+        class GraphResponse(HTTPSHandler):
+            def https_open(self, request):
+                requests.append(request)
+                response = addinfourl(io.BytesIO(), {"Location": "https://files.1drv.com/download"},
+                                      request.full_url, 302)
+                response.msg = "Found"
+                return response
+
+        opener = build_opener(NoRedirect(), GraphResponse())
+        with patch("quotation.build_opener", return_value=opener), \
+                patch("quotation.urlopen", return_value=io.BytesIO(b"workbook")) as open_url:
+            with download_onedrive_workbook("Quotations/client.xlsx", "private-access") as workbook:
+                self.assertEqual(workbook.read(), b"workbook")
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(requests[0].get_header("Authorization"), "Bearer private-access")
+            open_url.assert_called_once_with("https://files.1drv.com/download", timeout=30)
 
     def test_invalid_paths_never_reach_network(self):
         for path in ("", "/client.xlsx", "../client.xlsx", "Quotes/../client.xlsx", "Quotes//client.xlsx",
                      "https://example.com/client.xlsx", "Quotes\\client.xlsx", "Quotes/client.json", "Quotes/\nclient.xlsx"):
-            with self.subTest(path=path), patch("quotation.urlopen") as open_url:
+            with self.subTest(path=path), patch("quotation.urlopen") as open_url, patch("quotation.build_opener") as build:
                 with self.assertRaises(ValueError):
                     download_onedrive_workbook(path, "private-access")
                 open_url.assert_not_called()
+                build.assert_not_called()
 
     def test_download_errors_hide_provider_details_and_do_not_retry(self):
         for status in (401, 403, 404, 429, 500):
             for download_started in (False, True):
                 error = HTTPError("https://files.1drv.com/private-url", status, "PRIVATE_DETAILS", {},
                                   io.BytesIO(b"private@example.com PRIVATE_TOKEN"))
-                responses = [self.metadata(), error] if download_started else [error]
                 with self.subTest(status=status, download=download_started), \
-                        patch("quotation.urlopen", side_effect=responses) as open_url:
+                        patch("quotation.build_opener") as build, patch("quotation.urlopen", side_effect=error) as open_url:
+                    build.return_value.open.side_effect = self.redirect() if download_started else error
                     with self.assertRaisesRegex(ValueError, f"HTTP {status}") as raised:
                         download_onedrive_workbook("Quotations/client.xlsx", "private-access")
-                    self.assertEqual(open_url.call_count, len(responses))
+                    build.return_value.open.assert_called_once()
+                    self.assertEqual(open_url.call_count, int(download_started))
                     self.assertNotIn("PRIVATE", str(raised.exception))
                     self.assertNotIn("private", str(raised.exception))
 
-    def test_missing_or_unsafe_download_urls_are_rejected(self):
-        for metadata in ({}, [], {"@microsoft.graph.downloadUrl": 123},
-                         {"@microsoft.graph.downloadUrl": "http://files.1drv.com/file"},
-                         {"@microsoft.graph.downloadUrl": "https://user:password@files.1drv.com/file"}):
-            with self.subTest(metadata=metadata), \
-                    patch("quotation.urlopen", return_value=io.BytesIO(json.dumps(metadata).encode())) as open_url:
+    def test_missing_or_unsafe_redirect_urls_are_rejected(self):
+        for url in ("", "http://files.1drv.com/file", "file:///tmp/client.xlsx",
+                    "https://user:password@files.1drv.com/file"):
+            with self.subTest(url=url), patch("quotation.build_opener") as build, patch("quotation.urlopen") as open_url:
+                build.return_value.open.side_effect = self.redirect(url)
                 with self.assertRaisesRegex(ValueError, "secure workbook download URL"):
                     download_onedrive_workbook("Quotations/client.xlsx", "private-access")
-                open_url.assert_called_once()
+                open_url.assert_not_called()
+        with patch("quotation.build_opener") as build, patch("quotation.urlopen") as open_url:
+            build.return_value.open.side_effect = HTTPError("https://graph.microsoft.com/content", 302, "Found", {}, io.BytesIO())
+            with self.assertRaisesRegex(ValueError, "secure workbook download URL"):
+                download_onedrive_workbook("Quotations/client.xlsx", "private-access")
+            open_url.assert_not_called()
 
     def test_empty_or_oversized_workbooks_are_rejected(self):
         for content in (b"", b"12345"):
-            with self.subTest(content=content), patch("quotation.MAX_WORKBOOK_BYTES", 4), \
-                    patch("quotation.urlopen", side_effect=[self.metadata(), io.BytesIO(content)]):
-                with self.assertRaisesRegex(ValueError, "non-empty and at most"):
-                    download_onedrive_workbook("Quotations/client.xlsx", "private-access")
+            for redirected in (False, True):
+                with self.subTest(content=content, redirected=redirected), patch("quotation.MAX_WORKBOOK_BYTES", 4), \
+                        patch("quotation.build_opener") as build, patch("quotation.urlopen", return_value=io.BytesIO(content)):
+                    if redirected:
+                        build.return_value.open.side_effect = self.redirect()
+                    else:
+                        build.return_value.open.return_value = io.BytesIO(content)
+                    with self.assertRaisesRegex(ValueError, "non-empty and at most"):
+                        download_onedrive_workbook("Quotations/client.xlsx", "private-access")
 
     def test_cli_downloads_latest_workbooks_and_closes_them_on_failure(self):
         for fail_client in (False, True):

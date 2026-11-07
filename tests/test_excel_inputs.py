@@ -1,5 +1,4 @@
 import io
-import json
 import os
 import shutil
 import tempfile
@@ -104,22 +103,21 @@ class ExcelInputTests(unittest.TestCase):
             if iteration:
                 self.edit(self.master, "Catalogue", "G6", 1300)
             self.edit(self.client, "Requirements", "B4", f"Saved client {iteration}")
-            metadata = json.dumps({"@microsoft.graph.downloadUrl": "https://files.1drv.com/download"}).encode()
-            responses = [io.BytesIO(metadata), io.BytesIO(self.master.read_bytes()),
-                         io.BytesIO(metadata), io.BytesIO(self.client.read_bytes())]
+            responses = [io.BytesIO(self.master.read_bytes()), io.BytesIO(self.client.read_bytes())]
             with self.subTest(iteration=iteration), \
                     patch.dict(os.environ, {"MICROSOFT_CLIENT_ID": "client", "MICROSOFT_REFRESH_TOKEN": "refresh"}, clear=True), \
                     patch("sys.argv", ["quotation.py", "--onedrive", "--send-email",
                                        "--requirements", "Quotations/saved-client.xlsx",
                                        "--catalogue", "Quotations/master.xlsx"]), \
                     patch("quotation.recipient_addresses"), patch("quotation.refresh_access_token", return_value="access"), \
-                    patch("quotation.urlopen", side_effect=responses) as open_url, \
+                    patch("quotation.build_opener") as build, \
                     patch("quotation.render_pdf") as render, patch("quotation.send_email") as send, patch("builtins.print"):
+                build.return_value.open.side_effect = responses
                 main()
                 self.assertEqual(render.call_args.args[1]["customer"], f"Saved client {iteration}")
                 self.assertEqual(render.call_args.args[2]["total"], Decimal(total))
-                self.assertIn("Quotations/master.xlsx", open_url.call_args_list[0].args[0].full_url)
-                self.assertIn("Quotations/saved-client.xlsx", open_url.call_args_list[2].args[0].full_url)
+                self.assertIn("Quotations/master.xlsx", build.return_value.open.call_args_list[0].args[0].full_url)
+                self.assertIn("Quotations/saved-client.xlsx", build.return_value.open.call_args_list[1].args[0].full_url)
                 send.assert_called_once_with(ROOT / "output/pdf/POC-EXCEL-001.pdf", "POC-EXCEL-001")
 
     def test_blank_and_zero_quantities_are_omitted(self):

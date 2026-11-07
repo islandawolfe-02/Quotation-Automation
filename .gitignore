@@ -227,3 +227,6 @@ tmp/
 
 #Codex Reference Files
 AGENTS.md
+
+# Local deployment and business instructions
+/instructions.md
